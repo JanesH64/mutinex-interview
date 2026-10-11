@@ -2,10 +2,19 @@ import logging
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException
 
 from mc_api.dependencies import get_current_user, get_scope, require_roles
-from mc_api.models import AppUser, CrewSkill, Skill, Unavailability
+from mc_api.models import (
+    AppUser,
+    Assignment,
+    AssignmentStatus,
+    CrewSkill,
+    Mission,
+    MissionRequirement,
+    Skill,
+    Unavailability,
+)
 from mc_api.scope import OrgScope
 from mc_shared import (
     CrewSkillOut,
@@ -23,6 +32,45 @@ router = APIRouter(
     tags=["profile"],
     dependencies=[Depends(require_roles(UserRole.CREW, rule="Only crew members manage a profile"))],
 )
+
+
+def active_assignments(
+    scope: OrgScope, user: AppUser
+) -> list[tuple[Assignment, Mission, MissionRequirement, str]]:
+    # The row lock makes a profile write wait for a concurrent write of the same caller.
+    scope.get(AppUser, user.id, for_update=True)
+    rows = scope.session.execute(
+        scope.select(Assignment)
+        .add_columns(Mission, MissionRequirement, Skill.name)
+        .join(
+            Mission, (Mission.org_id == Assignment.org_id) & (Mission.id == Assignment.mission_id)
+        )
+        .join(
+            MissionRequirement,
+            (MissionRequirement.org_id == Assignment.org_id)
+            & (MissionRequirement.id == Assignment.requirement_id),
+        )
+        .join(
+            Skill,
+            (Skill.org_id == MissionRequirement.org_id) & (Skill.id == MissionRequirement.skill_id),
+        )
+        .where(
+            Assignment.user_id == user.id,
+            Assignment.status.in_([AssignmentStatus.INVITED, AssignmentStatus.ACCEPTED]),
+        )
+        .order_by(Mission.start_date, MissionRequirement.position)
+    )
+    return [tuple(r) for r in rows]
+
+
+def reject_conflicts(lines: list[str], action: str) -> None:
+    if lines:
+        logger.info("%s rejected: %s conflicts", action, len(lines))
+        raise HTTPException(409, "\n".join(lines))
+
+
+def conflict_line(a: Assignment, m: Mission, detail: str) -> str:
+    return f"Conflicts with your {a.status} assignment on mission '{m.title}' ({m.id}): {detail}."
 
 
 @router.get("")
@@ -61,6 +109,14 @@ def set_skill(
     if skill is None:
         logger.info("skill set by user %s rejected: unknown skill %s", user.id, skill_id)
         raise HTTPException(422, f"Unknown skill: {skill_id}")
+    reject_conflicts(
+        [
+            conflict_line(a, m, f"slot {r.position} requires {name} level {r.min_level}")
+            for a, m, r, name in active_assignments(scope, user)
+            if r.skill_id == skill_id and body.level < r.min_level
+        ],
+        f"skill set by user {user.id} for skill {skill_id}",
+    )
     crew_skill = scope.session.scalar(
         scope.select(CrewSkill).where(CrewSkill.user_id == user.id, CrewSkill.skill_id == skill_id)
     )
@@ -78,17 +134,24 @@ def remove_skill(
     skill_id: UUID,
     user: Annotated[AppUser, Depends(get_current_user)],
     scope: Annotated[OrgScope, Depends(get_scope)],
-) -> Response:
+) -> None:
     crew_skill = scope.session.scalar(
         scope.select(CrewSkill).where(CrewSkill.user_id == user.id, CrewSkill.skill_id == skill_id)
     )
     if crew_skill is None:
         logger.info("skill remove by user %s rejected: skill %s not in profile", user.id, skill_id)
         raise HTTPException(404, "Not found")
+    reject_conflicts(
+        [
+            conflict_line(a, m, f"slot {r.position} requires {name} level {r.min_level}")
+            for a, m, r, name in active_assignments(scope, user)
+            if r.skill_id == skill_id
+        ],
+        f"skill remove by user {user.id} for skill {skill_id}",
+    )
     scope.session.delete(crew_skill)
     scope.session.commit()
     logger.info("user %s removed skill %s", user.id, skill_id)
-    return Response(status_code=204)
 
 
 @router.get("/unavailability")
@@ -110,6 +173,14 @@ def add_unavailability(
     user: Annotated[AppUser, Depends(get_current_user)],
     scope: Annotated[OrgScope, Depends(get_scope)],
 ) -> UnavailabilityOut:
+    reject_conflicts(
+        [
+            conflict_line(a, m, f"the mission runs {m.start_date} to {m.end_date}")
+            for a, m, _, _ in active_assignments(scope, user)
+            if body.start_date <= m.end_date and body.end_date >= m.start_date
+        ],
+        f"unavailability add by user {user.id}",
+    )
     row = Unavailability(org_id=scope.org_id, user_id=user.id, **body.model_dump())
     scope.session.add(row)
     scope.session.commit()
