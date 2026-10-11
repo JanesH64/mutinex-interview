@@ -103,3 +103,15 @@ def test_user_role_lives_in_mc_shared():
     from mc_api import models
 
     assert models.UserRole is mc_shared.UserRole
+
+
+def test_login_and_rejections_are_logged_without_the_token(client, make_user, caplog):
+    caplog.set_level("INFO")
+    user = make_user(UserRole.CREW)
+    token = client.post("/auth/login", json={"username": user.username}).json()["access_token"]
+    client.post("/auth/login", json={"username": "nobody"})
+    client.get("/me", headers=bearer("garbage"))
+    assert f"login ok: user {user.id}" in caplog.text
+    assert "login failed: unknown username 'nobody'" in caplog.text
+    assert "auth rejected: invalid token" in caplog.text
+    assert token not in caplog.text and "garbage" not in caplog.text

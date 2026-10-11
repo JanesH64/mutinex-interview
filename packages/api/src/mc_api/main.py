@@ -1,3 +1,5 @@
+import logging
+import os
 from typing import Annotated
 from uuid import UUID
 
@@ -11,6 +13,12 @@ from mc_api.errors import Forbidden, forbidden_handler
 from mc_api.models import AppUser
 from mc_api.scope import OrgScope, get_scope
 from mc_shared import Health, LoginRequest, Me, Token, UserOut, UserRole
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Mission Control")
 app.add_exception_handler(Forbidden, forbidden_handler)
@@ -26,7 +34,9 @@ def health(session: Annotated[Session, Depends(get_session)]) -> Health:
 def login(body: LoginRequest, session: Annotated[Session, Depends(get_session)]) -> Token:
     user = find_user_by_username(session, body.username)
     if user is None:
+        logger.info("login failed: unknown username %r", body.username)
         raise unauthorized()
+    logger.info("login ok: user %s role %s org %s", user.id, user.role, user.org_id)
     return Token(access_token=create_token(user.id))
 
 
