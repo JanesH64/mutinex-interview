@@ -395,15 +395,15 @@ The matcher includes a crew member in the selection set only if all conditions a
 - The crew member has not declined this mission.
 
 ### Ranking
-The matcher ranks a crew member higher if:
-- **Workload is lower.** Workload is the number of booked mission days (INVITED and ACCEPTED) in a time window before and after the mission (example: 90 days).
-- **Proficiency is closest to the minimum.** Experts stay free for missions with higher proficiency requirements.
-
-**To evaluate in build step 5:** a skill scarcity term. If few other crew members have a skill, the matcher ranks a holder of that skill lower to keep them free.
+The matcher ranks the candidates of a slot in this strict order. A later rule applies only at a full tie of the earlier rules.
+1. **Proficiency is closest to the minimum (gap).** The gap is `level - min_level`. Experts stay free for missions with higher proficiency requirements.
+2. **Scarcity is lower.** Scarcity is the max of `1 / holders` over the other skills of the crew member, without the slot skill. `holders` counts the CREW members of the org with the skill at any level. A crew member with no other skill has scarcity 0. The matcher keeps the holders of a rare skill free.
+3. **Workload is lower.** Workload is the number of booked mission days (INVITED and ACCEPTED) in a window of 90 days before and after the mission. Workload is only a tie breaker. A workload cap is P2.
+4. **The username is first in alphabetical order.** This rule makes each result deterministic.
 
 ### Slot assignment
 - The matcher assigns all slots together, not one by one.
-- **To evaluate in build step 5:** scipy `linear_sum_assignment` against a naive solution.
+- scipy `linear_sum_assignment` solves a slots x candidates cost matrix. A big cost marks the ineligible pairs, so the solver fills the maximum number of slots first.
 - Rematching fills only open slots. An open slot has no INVITED or ACCEPTED assignment.
 
 ### Availability
@@ -458,3 +458,4 @@ The API gets the next mission number with `UPDATE org SET mission_seq = mission_
 | Date | Change | Reason |
 |------|--------|--------|
 | 2026-10-11 | Add build step 10, org crew view. The demo becomes step 11. | Requirement 11 had no build step. Step 9 covers only the own profile of a crew member. |
+| 2026-10-11 | Decide the matcher cost order, the scarcity rule and the solver. | Build step 5 had to evaluate the scarcity term and scipy. |

@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 from uuid import UUID
 
@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from mc_api.dependencies import get_current_user, get_scope, require_roles
 from mc_api.errors import Forbidden
-from mc_api.matcher import Candidate, assign
+from mc_api.matcher import WORKLOAD_WINDOW_DAYS, Candidate, assign, workload_days
 from mc_api.models import (
     AppUser,
     Assignment,
@@ -271,20 +271,6 @@ def match_preview(
     busy |= set(
         scope.session.scalars(
             scope.select(Assignment)
-            .join(
-                Mission,
-                (Mission.org_id == Assignment.org_id) & (Mission.id == Assignment.mission_id),
-            )
-            .where(
-                Assignment.status.in_([AssignmentStatus.INVITED, AssignmentStatus.ACCEPTED]),
-                overlaps(Mission),
-            )
-            .with_only_columns(Assignment.user_id)
-        )
-    )
-    busy |= set(
-        scope.session.scalars(
-            scope.select(Assignment)
             .where(
                 Assignment.mission_id == mission.id,
                 Assignment.status == AssignmentStatus.DECLINED,
@@ -292,8 +278,32 @@ def match_preview(
             .with_only_columns(Assignment.user_id)
         )
     )
+    window = timedelta(days=WORKLOAD_WINDOW_DAYS)
+    booked: dict[UUID, list[tuple[date, date]]] = {}
+    for uid, start, end in scope.session.execute(
+        scope.select(Assignment)
+        .join(
+            Mission, (Mission.org_id == Assignment.org_id) & (Mission.id == Assignment.mission_id)
+        )
+        .where(
+            Assignment.status.in_([AssignmentStatus.INVITED, AssignmentStatus.ACCEPTED]),
+            Mission.start_date <= mission.end_date + window,
+            Mission.end_date >= mission.start_date - window,
+        )
+        .with_only_columns(Assignment.user_id, Mission.start_date, Mission.end_date)
+    ):
+        booked.setdefault(uid, []).append((start, end))
+        if start <= mission.end_date and mission.start_date <= end:
+            busy.add(uid)
     candidates = [
-        Candidate(uid, users[uid].username, sk) for uid, sk in skills.items() if uid not in busy
+        Candidate(
+            uid,
+            users[uid].username,
+            sk,
+            workload_days(mission.start_date, mission.end_date, booked.get(uid, [])),
+        )
+        for uid, sk in skills.items()
+        if uid not in busy
     ]
     matches = []
     for slot, c in zip(slots, assign(slots, candidates, holders), strict=True):

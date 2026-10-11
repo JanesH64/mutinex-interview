@@ -89,3 +89,15 @@ def test_unavailable_crew_not_suggested(mc):
     assert "0 of 2 slots filled" in out
     assert "cara" not in out
     assert "fay" not in out
+
+
+def test_seeded_mission_shows_tradeoffs(mc):
+    assert mc("login", "--user", "leo")[0] == 0
+    mid = mission_id(mc("missions", "list")[1], "Polar Ice Survey")
+    code, out = mc("missions", "match", mid)
+    assert code == 0
+    for skill, user in (("Piloting", "ben"), ("EVA", "kai"), ("Medicine", "gus")):
+        row = next(line for line in out.splitlines() if skill in line)
+        assert user in row
+        assert re.search(r"(?<![\w.-])0(?![\w.-])", row)
+    assert "3 of 3 slots filled" in out
