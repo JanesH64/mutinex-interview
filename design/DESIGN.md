@@ -496,12 +496,12 @@ The API gets the next mission number with `UPDATE org SET mission_seq = mission_
 | 2026-10-11 | Decide the matcher cost order, the scarcity rule and the solver. | Build step 5 had to evaluate the scarcity term and scipy. |
 | 2026-10-11 | Key the transition table by action. | Withdraw and reject both go from APPROVAL_REQUIRED to DRAFT, with different actors. |
 | 2026-10-11 | Defer requirement 11 and build steps 8 and 10 to P1. Narrow requirement 23 to the demo of create, match, submit, approve, invite, accept and decline. | The time is short. The demo shows the core journey and the crew profile. |
-| 2026-10-11 | Add the build status, the not built items and the known gaps. | The design had no record of what the build covers. The approval view preview is not built. Build steps 8 and 10 are deferred to P1. The step 11 demo is in progress. |
+| 2026-10-11 | Add the build status, the not built items and the known gaps. | The design had no record of what the build covers. The approval view preview is not built. Build steps 8 and 10 are deferred to P1. The step 11 demo is built. |
 | 2026-10-11 | Defer the matcher preview on APPROVED missions (rematch of open slots). Build step 7 ships invite, accept, decline and the double booking check without it. | The lead can invite by name. The rematch needs no schema or API change and follows later. |
 
 ## Implementation status
 ### Build status
-Status on `develop` at commit `1e183de`. The design above stays the target. This table shows what the code does today.
+Status on `develop` at commit `5d35e4b`. The design above stays the target. This table shows what the code does today.
 
 | Step | Status | Built | Not built |
 |------|--------|-------|-----------|
@@ -515,16 +515,15 @@ Status on `develop` at commit `1e183de`. The design above stays the target. This
 | 8 Remaining transitions | Deferred to P1 | | Withdraw from APPROVED. Start with its guard. Complete. Cancel. Cancellation of assignments. The transition table has only the four actions of step 6. |
 | 9 Crew profile | Built | `mc profile show`, skills (list, set, remove), availability (list, add, remove). Profile conflicts (409). | |
 | 10 Org crew view | Deferred to P1 | `GET /users/{user_id}` only. Crew members see only their own record. | `GET /crew`, `GET /crew/{user_id}`, `mc crew list`, `mc crew show`. Directors and leads cannot list or show crew members (requirement 11). The mission list already shows all missions of the org. |
-| 11 Demo and test results | In progress | The README has run steps, the seed table and the test command. `scripts/demo.sh` and a README Demo section exist as uncommitted changes. The demo covers profile, create, match, submit, approve, invite, accept and decline. | Test results in the README (requirement 2). A commit of the demo. The demo has no rematch, no 403 or 404 check, no start, complete or cancel, and no crew view. |
+| 11 Demo and test results | Partly built | `scripts/demo.sh` and the README Demo section (commit `5d35e4b`). The demo covers profile, create, match, submit, approve, invite, accept and decline. | Test results in the README (requirement 2). The demo has no rematch, no 403 or 404 check, no start, complete or cancel, and no crew view. |
 
 No P1 item is built. P2 is out of scope.
 
-P0 requirements not met: 2 (test results in the README), 9 (preview in the approval view) and 19 (rematch). Requirement 11 is deferred to P1. Requirement 23 is narrowed to the demo of step 11, which is in progress.
+P0 requirements not met: 2 (test results in the README), 9 (preview in the approval view) and 19 (rematch). Requirement 11 is deferred to P1. Requirement 23 is narrowed to the demo of step 11, which is built.
 
 ### Open and deferred items
 - Open: matcher preview in the approval view (requirement 9, build step 6). `GET /missions/{id}` and `mc missions show` do not return the preview. Slice 3 of the `mission-approval` plan has the design.
 - Open: test results in the README (requirement 2).
-- Open: commit of the demo (`scripts/demo.sh`, README). The `readme-demo` plan has one slice, started, not complete.
 - Deferred to P0 later: rematch of open slots (requirement 19). See [Deferred](#deferred).
 - Deferred to P1: remaining transitions and assignment cancellation (build step 8). No plan exists.
 - Deferred to P1: org crew view (requirement 11, build step 10). The `org-crew-view` plan has three slices, none built.
