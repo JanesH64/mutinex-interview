@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated, TypeVar
 from uuid import UUID
 
@@ -10,6 +11,7 @@ from mc_api.db import get_session
 from mc_api.models import AppUser, Organization
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 
 class OrgScope:
@@ -26,6 +28,8 @@ class OrgScope:
         # Not session.get: it has no org filter. A missing row and another org give the same 404.
         row = self.session.scalar(self.select(model).where(model.id == id))
         if row is None:
+            # One message for a missing row and a row of another org, like the 404 body.
+            logger.info("not found: %s %s in org %s", model.__name__, id, self.org_id)
             raise HTTPException(404, "Not found")
         return row
 

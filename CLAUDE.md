@@ -23,6 +23,7 @@ Read `design/DESIGN.md` before you change the data model, the API or the CLI.
 - Use a UUID `id` primary key and `created_at` and `updated_at` on each table.
 - Return 404 for a resource in another org. Return 403 with the role and the rule for a forbidden action in the own org.
 - Add cross-org access checks to the happy path tests of each build step.
+- Add info-level logging to each new place in the API layer that changes state, rejects a request or denies access. Use `logging.getLogger(__name__)`. Never log a token or a secret.
 
 ## Git
 
