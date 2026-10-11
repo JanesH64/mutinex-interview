@@ -1,5 +1,6 @@
 import logging
 import uuid
+from collections.abc import Callable
 from typing import Annotated
 
 import jwt
@@ -9,8 +10,10 @@ from sqlalchemy.orm import Session
 
 from mc_api.auth import JWT_SECRET, unauthorized
 from mc_api.db import get_session
+from mc_api.errors import Forbidden
 from mc_api.models import AppUser
 from mc_api.scope import OrgScope
+from mc_shared import UserRole
 
 bearer = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
@@ -48,3 +51,11 @@ def get_scope(
     session: Annotated[Session, Depends(get_session)],
 ) -> OrgScope:
     return OrgScope(session, user.org_id)
+
+
+def require_roles(*roles: UserRole, rule: str) -> Callable[..., None]:
+    def check(user: Annotated[AppUser, Depends(get_current_user)]) -> None:
+        if user.role not in roles:
+            raise Forbidden(user.role, rule)  # forbidden_handler logs it
+
+    return check

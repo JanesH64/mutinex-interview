@@ -38,3 +38,23 @@ def test_request_exits_1_for_403_and_404(monkeypatch, capsys, status):
     assert exc.value.exit_code == 1
     err = capsys.readouterr().err
     assert ("CREW" in err and "Crew members view only" in err) or "Not found" in err
+
+
+def test_422_with_a_list_detail_shows_field_and_message():
+    detail = [
+        {
+            "loc": ["body", "start_date"],
+            "msg": "Input should be a valid date",
+            "type": "date_from_datetime_parsing",
+        },
+        {"loc": ["body", "title"], "msg": "Field required", "type": "missing"},
+    ]
+    message = error_message(response(422, json={"detail": detail}))
+    assert "start_date: Input should be a valid date" in message
+    assert "title: Field required" in message
+
+
+def test_422_with_a_text_detail_shows_the_text():
+    assert "Unknown skill: abc" in error_message(
+        response(422, json={"detail": "Unknown skill: abc"})
+    )

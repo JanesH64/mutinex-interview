@@ -19,4 +19,85 @@ def test_lead_journey(mc):
     for name in ("Piloting", "EVA", "Medicine", "Robotics", "Geology", "Communications"):
         assert name in skills
     assert "Welding" not in out
+    # Spec step 2: the lead creates a mission.
+    code, out = mc(
+        "missions",
+        "create",
+        "--title",
+        "Ice Core Drill",
+        "--start",
+        "2027-03-01",
+        "--end",
+        "2027-03-10",
+    )
+    assert code == 0
+    created = re.search(r"Created mission ([0-9a-f-]{36})", out)
+    assert created
+    assert "DRAFT" in out
+    assert "additional director" not in out
+    # Spec step 6 (part): list and show.
+    code, out = mc("missions", "list")
+    assert code == 0
+    for title in (
+        "Ice Core Drill",
+        "Lunar Relay Repair",
+        "Orbital Debris Survey",
+        "Mars Analogue Habitat",
+    ):
+        assert title in out
+    code, out = mc("missions", "show", created.group(1))
+    assert code == 0
+    assert "Ice Core Drill" in out
+    assert "leo" in out
     # Later slices add the next spec steps below, in order.
+
+
+def test_other_org_sees_not_found(mc):
+    assert mc("login", "--user", "leo")[0] == 0
+    code, out = mc(
+        "missions", "create", "--title", "Private", "--start", "2027-03-01", "--end", "2027-03-10"
+    )
+    assert code == 0
+    mission_id = re.search(r"Created mission ([0-9a-f-]{36})", out).group(1)
+    assert mc("login", "--user", "nick")[0] == 0
+    code, out = mc("missions", "show", mission_id)
+    assert code == 1
+    assert "Not found" in out
+
+
+def test_crew_is_forbidden(mc):
+    assert mc("login", "--user", "ava")[0] == 0
+    code, out = mc("missions", "list")
+    assert code == 1
+    assert "CREW" in out
+    assert "Only directors and leads manage and view missions" in out
+
+
+def test_director_mission_needs_additional_director(mc):
+    assert mc("login", "--user", "diana")[0] == 0
+    code, out = mc(
+        "missions",
+        "create",
+        "--title",
+        "Deep Field Survey",
+        "--start",
+        "2027-04-01",
+        "--end",
+        "2027-04-05",
+    )
+    assert code == 0
+    assert "This mission needs an additional director for approval." in out
+
+
+def test_bad_input_shows_a_message_not_a_traceback(mc):
+    assert mc("login", "--user", "leo")[0] == 0
+    code, out = mc("missions", "show", "abc")
+    assert code == 1
+    assert "Traceback" not in out
+    assert "mission_id" in out
+    code, out = mc(
+        "missions", "create", "--title", "X", "--start", "2027-13-01", "--end", "2027-12-31"
+    )
+    assert code == 1
+    assert "start_date" in out
+    assert "Traceback" not in out

@@ -8,7 +8,7 @@ from rich.console import Console
 from mc_cli.token_store import load_token
 from mc_shared import ForbiddenError
 
-err = Console(stderr=True, markup=False, highlight=False, soft_wrap=True)
+err = Console(stderr=True, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
 API_URL = os.environ.get("MC_API_URL", "http://localhost:8000")
@@ -25,6 +25,15 @@ def error_message(response: httpx.Response) -> str:
         return f"Forbidden: your role is {body.role}. Rule: {body.rule}"
     if response.status_code == 404:
         return "Not found"
+    if response.status_code in (409, 422):
+        try:
+            detail = response.json()["detail"]
+        except (ValueError, KeyError, TypeError):
+            detail = None
+        if isinstance(detail, str):
+            return detail
+        if response.status_code == 422 and isinstance(detail, list):
+            return "\n".join(f"{d['loc'][-1]}: {d['msg']}" for d in detail)
     return f"API error {response.status_code}: {response.text}"
 
 

@@ -6,7 +6,7 @@ from mc_cli.client import request
 from mc_shared import SkillOut
 
 app = typer.Typer()
-console = Console(markup=False, highlight=False)
+console = Console(markup=False, highlight=False, emoji=False)
 
 
 @app.command("list")

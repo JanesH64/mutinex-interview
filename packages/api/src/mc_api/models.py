@@ -19,16 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from mc_api.db import Base
-from mc_shared import UserRole
-
-
-class MissionStatus(enum.StrEnum):
-    DRAFT = "DRAFT"
-    APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
-    APPROVED = "APPROVED"
-    ACTIVE = "ACTIVE"
-    COMPLETED = "COMPLETED"
-    CANCELLED = "CANCELLED"
+from mc_shared import MissionStatus, UserRole
 
 
 class AssignmentStatus(enum.StrEnum):
