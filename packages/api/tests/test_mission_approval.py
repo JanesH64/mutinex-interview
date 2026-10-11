@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -149,3 +150,168 @@ def test_transitions_and_rejections_are_logged(client, make_user, session, auth,
 def test_mission_id_that_is_not_a_uuid_gives_422(client, make_user, auth, action):
     lead = make_user(UserRole.LEAD)
     assert client.post(f"/missions/not-a-uuid/{action}", headers=auth(lead)).status_code == 422
+
+
+# --- Slice 2: approve and reject ---
+
+LEAD_ONLY = {"role": "LEAD", "rule": "Only directors approve or reject missions"}
+OWN = {
+    "role": "DIRECTOR",
+    "rule": "A mission lead never approves or rejects their own mission",
+}
+
+
+def pending(session, make_user, lead_role=UserRole.LEAD):
+    """Return (org, lead, director D2, mission) with the mission in APPROVAL_REQUIRED."""
+    lead = make_user(lead_role)
+    org = session.get(Organization, lead.org_id)
+    d2 = make_user(UserRole.DIRECTOR, org=org)
+    mission = make_mission(session, lead)
+    set_status(session, mission, S.APPROVAL_REQUIRED)
+    return org, lead, d2, mission
+
+
+def test_director_approves_a_mission_of_a_lead(client, make_user, session, auth):
+    _, _, d2, mission = pending(session, make_user)
+    t0 = datetime.now(UTC)
+    response = client.post(f"/missions/{mission.id}/approve", headers=auth(d2))
+    t1 = datetime.now(UTC)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "APPROVED"
+    assert body["approved_by_username"] == d2.username
+    assert t0 <= datetime.fromisoformat(body["approved_at"]) <= t1
+
+
+def test_director_approves_a_mission_of_another_director(client, make_user, session, auth):
+    _, _, d2, mission = pending(session, make_user, UserRole.DIRECTOR)
+    response = client.post(f"/missions/{mission.id}/approve", headers=auth(d2))
+    assert response.status_code == 200
+    assert response.json()["approved_by_username"] == d2.username
+
+
+def test_director_rejects_without_a_body(client, make_user, session, auth):
+    _, lead, d2, mission = pending(session, make_user)
+    response = client.post(f"/missions/{mission.id}/reject", headers=auth(d2))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "DRAFT"
+    assert body["approved_by_username"] is None
+    assert body["approved_at"] is None
+    patch = client.patch(f"/missions/{mission.id}", json={"title": "New"}, headers=auth(lead))
+    assert patch.status_code == 200
+    add_slot(session, mission, 1, make_skill(session, lead.org_id, "S1"))
+    assert client.post(f"/missions/{mission.id}/submit", headers=auth(lead)).status_code == 200
+
+
+def test_reject_accepts_a_comment_body(client, make_user, session, auth):
+    _, _, d2, mission = pending(session, make_user)
+    response = client.post(
+        f"/missions/{mission.id}/reject", json={"comment": "too expensive"}, headers=auth(d2)
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "DRAFT"
+
+
+def test_submit_then_withdraw_leaves_the_approver_fields_null(client, make_user, session, auth):
+    lead = make_user(UserRole.LEAD)
+    mission = make_mission(session, lead)
+    add_slot(session, mission, 1, make_skill(session, lead.org_id, "S1"))
+    assert client.post(f"/missions/{mission.id}/submit", headers=auth(lead)).status_code == 200
+    response = client.post(f"/missions/{mission.id}/withdraw", headers=auth(lead))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["approved_by_username"] is None
+    assert body["approved_at"] is None
+
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+def test_lead_never_approves_or_rejects(client, make_user, session, auth, action):
+    org, lead, _, mission = pending(session, make_user)
+    l2 = make_user(UserRole.LEAD, org=org)
+    for caller in (l2, lead):
+        response = client.post(f"/missions/{mission.id}/{action}", headers=auth(caller))
+        assert response.status_code == 403
+        assert response.json() == LEAD_ONLY
+    assert status_of(client, auth, lead, mission) == "APPROVAL_REQUIRED"
+
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+def test_director_never_acts_on_an_own_mission(client, make_user, session, auth, action):
+    _, d1, _, mission = pending(session, make_user, UserRole.DIRECTOR)
+    response = client.post(f"/missions/{mission.id}/{action}", headers=auth(d1))
+    assert response.status_code == 403
+    assert response.json() == OWN
+    assert status_of(client, auth, d1, mission) == "APPROVAL_REQUIRED"
+
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+@pytest.mark.parametrize("status", [S.DRAFT, S.APPROVED, S.ACTIVE, S.COMPLETED, S.CANCELLED])
+def test_approve_and_reject_in_a_wrong_status_give_409(
+    client, make_user, session, auth, action, status
+):
+    _, _, d2, mission = pending(session, make_user)
+    set_status(session, mission, status)
+    response = client.post(f"/missions/{mission.id}/{action}", headers=auth(d2))
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": f"Mission is {status.value}. {action.capitalize()} is allowed only in APPROVAL_REQUIRED."
+    }
+    assert status_of(client, auth, d2, mission) == status.value
+
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+def test_lead_of_another_org_gets_404_not_403(client, make_user, session, auth, action):
+    owner = make_user(UserRole.LEAD)
+    mission = make_mission(session, owner)
+    outsider = make_user(UserRole.LEAD)
+    response = client.post(f"/missions/{mission.id}/{action}", headers=auth(outsider))
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not found"}
+
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+def test_crew_gets_403_on_approve_and_reject(client, make_user, session, auth, action):
+    _, _, _, mission = pending(session, make_user)
+    crew = make_user(UserRole.CREW, org=session.get(Organization, mission.org_id))
+    response = client.post(f"/missions/{mission.id}/{action}", headers=auth(crew))
+    assert response.status_code == 403
+    assert response.json() == CREW_403
+
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+def test_other_org_approve_and_reject_give_the_404_of_a_missing_id(
+    client, make_user, session, auth, action
+):
+    _, _lead, _, mission = pending(session, make_user)
+    for caller in (make_user(UserRole.DIRECTOR), make_user(UserRole.LEAD)):
+        response = client.post(f"/missions/{mission.id}/{action}", headers=auth(caller))
+        missing = client.post(f"/missions/{uuid4()}/{action}", headers=auth(caller))
+        assert response.status_code == 404
+        assert response.json() == missing.json() == {"detail": "Not found"}
+    session.refresh(mission)
+    assert mission.status == S.APPROVAL_REQUIRED
+    assert mission.approved_by is None
+
+
+def test_approve_reject_and_409_are_logged(client, make_user, session, auth, caplog):
+    _, _, d2, mission = pending(session, make_user)
+    headers = auth(d2)
+    token = headers["Authorization"].removeprefix("Bearer ")
+    for action, code in [("approve", 200), ("reject", 200), ("approve", 409)]:
+        if action == "reject":
+            set_status(session, mission, S.APPROVAL_REQUIRED)
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            response = client.post(f"/missions/{mission.id}/{action}", headers=headers)
+        assert response.status_code == code
+        records = [r for r in caplog.records if r.name == "mc_api.routers.missions"]
+        assert len(records) == 1
+        assert str(mission.id) in records[0].getMessage()
+        assert all(token not in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+def test_approve_and_reject_with_a_non_uuid_id_give_422(client, make_user, auth, action):
+    director = make_user(UserRole.DIRECTOR)
+    assert client.post(f"/missions/not-a-uuid/{action}", headers=auth(director)).status_code == 422

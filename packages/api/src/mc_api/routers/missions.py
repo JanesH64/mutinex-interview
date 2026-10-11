@@ -67,6 +67,7 @@ def mission_out(scope: OrgScope, mission: Mission) -> MissionOut:
         )
         .order_by(MissionRequirement.position)
     )
+    approver = mission.approved_by and scope.get(AppUser, mission.approved_by)
     return MissionOut(
         id=mission.id,
         title=mission.title,
@@ -78,6 +79,8 @@ def mission_out(scope: OrgScope, mission: Mission) -> MissionOut:
         lead_username=lead.username,
         # Derived from the current role of the lead, never stored.
         requires_additional_director=lead.role == UserRole.DIRECTOR,
+        approved_by_username=approver.username if approver else None,
+        approved_at=mission.approved_at,
         slots=[
             SlotOut(
                 id=r.id,
@@ -150,6 +153,8 @@ def editable_mission(scope: OrgScope, user: AppUser, mission_id: UUID) -> Missio
 TRANSITIONS: dict[str, tuple[MissionStatus, MissionStatus]] = {
     "submit": (MissionStatus.DRAFT, MissionStatus.APPROVAL_REQUIRED),
     "withdraw": (MissionStatus.APPROVAL_REQUIRED, MissionStatus.DRAFT),
+    "approve": (MissionStatus.APPROVAL_REQUIRED, MissionStatus.APPROVED),
+    "reject": (MissionStatus.APPROVAL_REQUIRED, MissionStatus.DRAFT),
 }
 
 
@@ -163,6 +168,16 @@ def own_locked_mission(scope: OrgScope, user: AppUser, mission_id: UUID) -> Miss
     return mission
 
 
+def reviewer_locked_mission(scope: OrgScope, user: AppUser, mission_id: UUID) -> Mission:
+    """Lock the mission. 404, then 403 unless the user is a director who does not lead it."""
+    mission = scope.get(Mission, mission_id, for_update=True)
+    if user.role != UserRole.DIRECTOR:
+        raise Forbidden(user.role, "Only directors approve or reject missions")
+    if mission.lead_id == user.id:
+        raise Forbidden(user.role, "A mission lead never approves or rejects their own mission")
+    return mission
+
+
 def transition(scope: OrgScope, user: AppUser, mission: Mission, action: str) -> MissionOut:
     """Move a locked mission. The route checks the actor first. 409 for a wrong status."""
     source, target = TRANSITIONS[action]
@@ -172,6 +187,9 @@ def transition(scope: OrgScope, user: AppUser, mission: Mission, action: str) ->
             409, f"Mission is {mission.status}. {action.capitalize()} is allowed only in {source}."
         )
     mission.status = target
+    if action == "approve":
+        mission.approved_by = user.id
+        mission.approved_at = datetime.now(UTC)
     scope.session.commit()
     logger.info("mission %s: %s by user %s, now %s", mission.id, action, user.id, target)
     return mission_out(scope, mission)
@@ -193,6 +211,24 @@ def withdraw_mission(
     user: Annotated[AppUser, Depends(get_current_user)],
 ) -> MissionOut:
     return transition(scope, user, own_locked_mission(scope, user, mission_id), "withdraw")
+
+
+@router.post("/{mission_id}/approve")
+def approve_mission(
+    mission_id: UUID,
+    scope: Scope,
+    user: Annotated[AppUser, Depends(get_current_user)],
+) -> MissionOut:
+    return transition(scope, user, reviewer_locked_mission(scope, user, mission_id), "approve")
+
+
+@router.post("/{mission_id}/reject")
+def reject_mission(
+    mission_id: UUID,
+    scope: Scope,
+    user: Annotated[AppUser, Depends(get_current_user)],
+) -> MissionOut:
+    return transition(scope, user, reviewer_locked_mission(scope, user, mission_id), "reject")
 
 
 @router.patch("/{mission_id}")
