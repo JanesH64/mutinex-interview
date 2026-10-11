@@ -8,7 +8,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from mc_api.dependencies import get_current_user, get_scope, require_roles
 from mc_api.errors import Forbidden
 from mc_api.matcher import Candidate, assign
-from mc_api.models import AppUser, CrewSkill, Mission, MissionRequirement, Skill
+from mc_api.models import (
+    AppUser,
+    Assignment,
+    AssignmentStatus,
+    CrewSkill,
+    Mission,
+    MissionRequirement,
+    Skill,
+    Unavailability,
+)
 from mc_api.scope import OrgScope
 from mc_shared import (
     CrewSuggestion,
@@ -248,7 +257,44 @@ def match_preview(
         users[u.id] = u
         skills.setdefault(u.id, {})[cs.skill_id] = cs.level
         holders[cs.skill_id] = holders.get(cs.skill_id, 0) + 1
-    candidates = [Candidate(uid, users[uid].username, sk) for uid, sk in skills.items()]
+
+    def overlaps(m):
+        return (m.start_date <= mission.end_date) & (mission.start_date <= m.end_date)
+
+    busy = set(
+        scope.session.scalars(
+            scope.select(Unavailability)
+            .where(overlaps(Unavailability))
+            .with_only_columns(Unavailability.user_id)
+        )
+    )
+    busy |= set(
+        scope.session.scalars(
+            scope.select(Assignment)
+            .join(
+                Mission,
+                (Mission.org_id == Assignment.org_id) & (Mission.id == Assignment.mission_id),
+            )
+            .where(
+                Assignment.status.in_([AssignmentStatus.INVITED, AssignmentStatus.ACCEPTED]),
+                overlaps(Mission),
+            )
+            .with_only_columns(Assignment.user_id)
+        )
+    )
+    busy |= set(
+        scope.session.scalars(
+            scope.select(Assignment)
+            .where(
+                Assignment.mission_id == mission.id,
+                Assignment.status == AssignmentStatus.DECLINED,
+            )
+            .with_only_columns(Assignment.user_id)
+        )
+    )
+    candidates = [
+        Candidate(uid, users[uid].username, sk) for uid, sk in skills.items() if uid not in busy
+    ]
     matches = []
     for slot, c in zip(slots, assign(slots, candidates, holders), strict=True):
         suggestion = c and CrewSuggestion(
