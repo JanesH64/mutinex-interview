@@ -2,8 +2,9 @@ import os
 
 import httpx
 import typer
-from mc_shared import Health
 from rich.console import Console
+
+from mc_shared import Health
 
 API_URL = os.environ.get("MC_API_URL", "http://localhost:8000")
 

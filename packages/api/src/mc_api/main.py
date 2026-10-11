@@ -1,11 +1,11 @@
 from typing import Annotated
 
 from fastapi import Depends, FastAPI
-from mc_shared import Health
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from mc_api.db import get_session
+from mc_shared import Health
 
 app = FastAPI(title="Mission Control")
 

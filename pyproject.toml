@@ -16,7 +16,13 @@ mc-api = { workspace = true }
 mc-cli = { workspace = true }
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "ruff>=0.17.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["packages"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint.isort]
+known-first-party = ["mc_api", "mc_cli", "mc_shared"]
