@@ -122,3 +122,13 @@ class ProfileOut(BaseModel):
     username: str
     display_name: str
     org_name: str
+
+
+class SkillLevel(BaseModel):
+    level: int = Field(ge=1, le=5)
+
+
+class CrewSkillOut(BaseModel):
+    skill_id: UUID
+    skill_name: str
+    level: int
