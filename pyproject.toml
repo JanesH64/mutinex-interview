@@ -1,0 +1,22 @@
+[project]
+name = "mission-control"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["mc-api", "mc-cli"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+mc-shared = { workspace = true }
+mc-api = { workspace = true }
+mc-cli = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["packages"]
