@@ -83,6 +83,11 @@ class SlotOut(BaseModel):
     min_level: int
 
 
+class SlotCreate(BaseModel):
+    skill_id: UUID
+    min_level: int = Field(ge=1, le=5)
+
+
 class MissionUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1)
     description: str | None = None

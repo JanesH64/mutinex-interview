@@ -35,8 +35,22 @@ def test_lead_journey(mc):
     assert created
     assert "DRAFT" in out
     assert "additional director" not in out
-    # Spec step 5: the lead edits the own mission.
     mission_id = created.group(1)
+    # Spec step 3: the lead adds two slots.
+    for name, level in (("Piloting", "3"), ("Geology", "2")):
+        code, out = mc(
+            "missions", "slots", "add", mission_id, "--skill", skills[name], "--level", level
+        )
+        assert code == 0
+    assert re.search(r"\b1\b.*Piloting", out)
+    assert re.search(r"\b2\b.*Geology", out)
+    # Spec step 4: the lead removes slot 1, then the next add reuses position 1.
+    assert mc("missions", "slots", "remove", mission_id, "1")[0] == 0
+    code, out = mc("missions", "slots", "add", mission_id, "--skill", skills["EVA"], "--level", "3")
+    assert code == 0
+    assert re.search(r"\b1\b.*EVA", out)
+    assert re.search(r"\b2\b.*Geology", out)
+    # Spec step 5: the lead edits the own mission.
     code, out = mc("missions", "edit", mission_id, "--title", "Ice Core Drill II")
     assert code == 0
     assert "Ice Core Drill II" in out
@@ -54,6 +68,8 @@ def test_lead_journey(mc):
     assert code == 0
     assert "Ice Core Drill II" in out
     assert "leo" in out
+    assert "EVA" in out
+    assert "Geology" in out
     # Later slices add the next spec steps below, in order.
 
 
