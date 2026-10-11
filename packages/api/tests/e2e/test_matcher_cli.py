@@ -62,3 +62,30 @@ def test_bad_id_shows_a_message_not_a_traceback(mc):
     code, out = mc("missions", "match", "abc")
     assert code == 1
     assert "Traceback" not in out
+
+
+def test_unavailable_crew_not_suggested(mc):
+    # Seed: cara (only EVA 4) has leave 2027-01-08..15. fay (only Medicine 4) is ACCEPTED
+    # on "Mars Analogue Habitat" 2027-01-04..15.
+    assert mc("login", "--user", "leo")[0] == 0
+    skills = skill_ids(mc("skills", "list")[1])
+    code, out = mc(
+        "missions",
+        "create",
+        "--title",
+        "Ice Window",
+        "--start",
+        "2027-01-11",
+        "--end",
+        "2027-01-14",
+    )
+    mid = re.search(r"Created mission ([0-9a-f-]{36})", out).group(1)
+    for name in ("EVA", "Medicine"):
+        add = mc("missions", "slots", "add", mid, "--skill", skills[name], "--level", "4")
+        assert add[0] == 0
+    code, out = mc("missions", "match", mid)
+    assert code == 0
+    assert out.count("No match") == 2
+    assert "0 of 2 slots filled" in out
+    assert "cara" not in out
+    assert "fay" not in out

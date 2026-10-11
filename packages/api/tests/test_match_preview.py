@@ -5,9 +5,17 @@ import pytest
 from sqlalchemy import text
 from test_mission_slots import add_slot, make_skill
 from test_missions import CREW_403, make_mission
+from test_profile_conflicts import assign
 
-from mc_api.models import CrewSkill, MissionStatus, Organization
-from mc_shared import UserRole
+from mc_api.models import (
+    AssignmentStatus,
+    CrewSkill,
+    MissionRequirement,
+    MissionStatus,
+    Organization,
+    Unavailability,
+)
+from mc_shared import UnavailabilityReason, UserRole
 
 NOT_OWNER = "Directors and leads run the matcher only on their own missions"
 TABLES = [
@@ -140,3 +148,106 @@ def test_org_without_crew_gives_null_suggestion(client, make_user, session, auth
 def test_bad_mission_id_gives_422(client, make_user, auth):
     lead = make_user(UserRole.LEAD)
     assert client.get("/missions/not-a-uuid/match", headers=auth(lead)).status_code == 422
+
+
+def busy_setup(session, make_user, slots=1):
+    """A DRAFT mission 2027-03-01..10 with EVA >= 3 slots and one EVA 3 crew member."""
+    lead = make_user(UserRole.LEAD)
+    mission = make_mission(session, lead)
+    mission.start_date, mission.end_date = date(2027, 3, 1), date(2027, 3, 10)
+    eva = make_skill(session, lead.org_id, "EVA")
+    for position in range(1, slots + 1):
+        add_slot(session, mission, position, eva, 3)
+    crew = make_user(UserRole.CREW, session.get(Organization, lead.org_id))
+    give(session, crew, eva, 3)
+    return lead, mission, eva, crew
+
+
+def leave(session, user, start, end):
+    session.add(
+        Unavailability(
+            org_id=user.org_id,
+            user_id=user.id,
+            start_date=start,
+            end_date=end,
+            reason=UnavailabilityReason.HOLIDAY,
+        )
+    )
+    session.flush()
+
+
+def suggested(client, auth, lead, mission, slot=0):
+    response = client.get(f"/missions/{mission.id}/match", headers=auth(lead))
+    assert response.status_code == 200
+    return response.json()["slots"][slot]["suggestion"]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "blocked"),
+    [
+        (date(2027, 2, 20), date(2027, 3, 1), True),
+        (date(2027, 3, 10), date(2027, 3, 12), True),
+        (date(2027, 2, 20), date(2027, 2, 28), False),
+        (date(2027, 3, 11), date(2027, 3, 12), False),
+    ],
+)
+def test_leave_blocks_only_when_it_overlaps_the_dates(
+    client, make_user, session, auth, start, end, blocked
+):
+    lead, mission, _, crew = busy_setup(session, make_user)
+    leave(session, crew, start, end)
+    result = suggested(client, auth, lead, mission)
+    assert (result is None) if blocked else (result["user_id"] == str(crew.id))
+
+
+def other_mission_assignment(session, lead, eva, crew, start, end, status):
+    other = make_mission(session, lead)
+    # INVITED, ACCEPTED and DECLINED rows need an APPROVED mission. CANCELLED rows fit DRAFT.
+    if status != AssignmentStatus.CANCELLED:
+        other.status = MissionStatus.APPROVED
+    other.start_date, other.end_date = start, end
+    slot = add_slot(session, other, 1, eva, 3)
+    assign(session, other, slot, crew, status)
+
+
+@pytest.mark.parametrize(
+    ("status", "start", "end", "blocked"),
+    [
+        (AssignmentStatus.ACCEPTED, date(2027, 3, 10), date(2027, 3, 15), True),
+        (AssignmentStatus.INVITED, date(2027, 3, 10), date(2027, 3, 15), True),
+        (AssignmentStatus.DECLINED, date(2027, 3, 10), date(2027, 3, 15), False),
+        (AssignmentStatus.CANCELLED, date(2027, 3, 10), date(2027, 3, 15), False),
+        (AssignmentStatus.ACCEPTED, date(2027, 2, 20), date(2027, 2, 28), False),
+    ],
+)
+def test_assignment_on_an_overlapping_mission_blocks_only_when_active(
+    client, make_user, session, auth, status, start, end, blocked
+):
+    lead, mission, eva, crew = busy_setup(session, make_user)
+    other_mission_assignment(session, lead, eva, crew, start, end, status)
+    result = suggested(client, auth, lead, mission)
+    assert (result is None) if blocked else (result["user_id"] == str(crew.id))
+
+
+def test_declined_on_this_mission_is_never_suggested(client, make_user, session, auth):
+    lead, mission, _, crew = busy_setup(session, make_user)
+    slot = session.query(MissionRequirement).filter_by(mission_id=mission.id).one()
+    assign(session, mission, slot, crew, AssignmentStatus.DECLINED)
+    assert suggested(client, auth, lead, mission) is None
+
+
+def test_busy_crew_is_skipped_and_the_free_one_takes_slot_one(client, make_user, session, auth):
+    lead, mission, eva, x = busy_setup(session, make_user, slots=2)
+    y = make_user(UserRole.CREW, session.get(Organization, lead.org_id))
+    give(session, y, eva, 3)
+    leave(session, x, date(2027, 2, 25), date(2027, 3, 2))
+    leave(session, x, date(2027, 3, 9), date(2027, 3, 11))
+    other_mission_assignment(
+        session, lead, eva, x, date(2027, 3, 5), date(2027, 3, 6), AssignmentStatus.ACCEPTED
+    )
+    response = client.get(f"/missions/{mission.id}/match", headers=auth(lead))
+    assert response.status_code == 200
+    first, second = response.json()["slots"]
+    assert first["suggestion"]["user_id"] == str(y.id)
+    assert second["suggestion"] is None
+    assert str(x.id) not in response.text
