@@ -74,6 +74,35 @@ uv run mc missions list
 uv run mc missions match <id of "Polar Ice Survey">
 ```
 
+## Demo
+`scripts/demo.sh` runs the full mission journey with the `mc` CLI. It shows one heading line for each step, then each `mc` command with its output.
+
+Prerequisites: Postgres runs (`docker compose up -d`). The API runs (`uv run uvicorn mc_api.main:app`).
+
+**Warning:** The script deletes all data in the database of `DATABASE_URL`. Step 1 runs `mc-seed`. Use it only on a local demo database.
+
+```sh
+bash scripts/demo.sh
+```
+
+The script uses a temporary folder for the token, so it does not replace your token. Set `MC_CONFIG_DIR` to change this. The script also reads `MC_API_URL` and `DATABASE_URL`. It sets `COLUMNS=200` so tables do not wrap.
+
+| Step | Title |
+|------|-------|
+| 1 | Reset the demo data |
+| 2 | Crew profile (`ben`): show the profile, set a skill, add and remove leave |
+| 3 | Create the mission and its slots (`leo`) |
+| 4 | Matcher preview in DRAFT (`leo`) |
+| 5 | Submit (`leo`) and approve (`diana`) |
+| 6 | Invite, accept and decline: `ben` accepts, `hana` declines |
+
+## Known gaps
+The demo does not show these items:
+- Rematch of open slots after a decline (requirement 19).
+- The 403 and 404 checks. The tests cover them.
+- Start, complete and cancel of a mission (build step 8).
+- The org-wide crew view and mission view for directors (build step 10, requirement 11).
+
 ## Configuration
 The defaults match `docker-compose.yml`, so the run steps need no configuration. To override a value, copy `.env.example` to `.env`, edit it and load it with `uv run --env-file .env <command>`.
 

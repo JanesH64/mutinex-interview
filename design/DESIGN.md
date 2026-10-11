@@ -32,7 +32,7 @@ P0 is the first version that is ready to pitch to a customer.
 8. Each mission needs approval. The lead submits the mission to a director.
 9. The director approves or rejects the mission. The approval view shows the matcher preview.
 10. Crew members accept or decline assignments.
-11. Directors see the whole org: all missions and all crew members (API and CLI).
+11. Deferred to P1: directors see the whole org (API and CLI). See P1 item 5.
 
 **Crew and skills**
 
@@ -56,7 +56,7 @@ P0 is the first version that is ready to pitch to a customer.
 
 21. Tests cover the happy path per workflow: lifecycle, matcher, invites and responses, crew profile.
 22. Cross-org access checks make sure that resources of another org return 404.
-23. A scripted end-to-end CLI demo runs the full mission lifecycle over the seed data.
+23. A scripted end-to-end CLI demo runs create, match, submit, approve, invite, accept and decline. A crew member manages the own profile.
 
 #### Build order
 Each step ends with its happy path test and its cross-org check. Each step is one or more commits.
@@ -68,10 +68,12 @@ Each step ends with its happy path test and its cross-org check. Each step is on
 5. Matcher preview: filters, ranking, slot assignment. `mc missions match`.
 6. Approval: submit, withdraw, approve, reject. No self approval, additional director flag, matcher preview in the approval view.
 7. Staffing: invite, `mc assignments list / accept / decline`, double booking check, decliner exclusion on rematch.
-8. Remaining transitions: withdraw from APPROVED to DRAFT, start (with guard), complete, cancel. Assignment cancellation.
+8. Remaining transitions: withdraw from APPROVED to DRAFT, start (with guard), complete, cancel. Assignment cancellation. Deferred to P1.
 9. Crew profile: `mc profile show`, skills, availability.
-10. Org crew view: directors and leads list and show the crew members of the org (requirement 11). Leads see leave as "unavailable" without the reason.
+10. Org crew view: directors and leads list and show the crew members of the org (requirement 11). Leads see leave as "unavailable" without the reason. Deferred to P1.
 11. Scripted end-to-end CLI demo and test results in the README.
+
+The [Implementation status](#implementation-status) section at the end shows what the build covers.
 
 ### P1
 P1 extends the MVP if time permits in this session.
@@ -80,7 +82,9 @@ P1 extends the MVP if time permits in this session.
 2. Mission audit logs.
 3. Decision insights for the lead: why the matcher excluded a crew member.
 4. Rank breakdown per suggestion: why a crew member is the best fit for the slot.
-5. Short references for missions (`MSN-<n>`) and skills (`slug`) in the CLI. See [Short references](#short-references).
+5. Directors see the whole org: all missions and all crew members (API and CLI). This is requirement 11, build step 10.
+6. Remaining mission transitions: withdraw from APPROVED, start, complete, cancel (build step 8).
+7. Short references for missions (`MSN-<n>`) and skills (`slug`) in the CLI. See [Short references](#short-references).
 
 ### P2
 P2 is out of scope for this session.
@@ -270,6 +274,8 @@ stateDiagram-v2
 | COMPLETED | The lead completed the mission. |
 | CANCELLED | The lead cancelled the mission, without a reason. All states except COMPLETED can go to CANCELLED. All INVITED and ACCEPTED assignments become CANCELLED. |
 
+**Built today.** The code has the transitions submit, withdraw (from APPROVAL_REQUIRED), approve and reject. Withdraw from APPROVED, start, complete and cancel are not built (build step 8). No code cancels assignments yet, because no built transition needs it.
+
 **Rules**
 - The lead can edit a mission only in DRAFT.
 - Staffing changes need no new approval. Example: the lead replaces a crew member who declined.
@@ -298,7 +304,7 @@ stateDiagram-v2
 |-------|-------------|
 | INVITED | The lead invited the crew member. This is possible only when the mission is APPROVED. |
 | ACCEPTED | The crew member accepted. |
-| DECLINED | The crew member declined. The slot is open again and the lead runs the matcher again. The matcher never suggests this crew member for this mission again. |
+| DECLINED | The crew member declined. The slot is open again and the lead runs the matcher again. The matcher never suggests this crew member for this mission again. The rematch in APPROVED is deferred (see [Deferred](#deferred)). Until then, the lead invites another crew member by name. |
 | CANCELLED | The mission went back to DRAFT or the lead cancelled it. The crew member is available again. |
 
 The API checks the invite in this order. The first failed check gives the error.
@@ -345,11 +351,11 @@ A director acts only on their own missions. A director cannot act on the mission
 | Action | Director | Lead | Crew member |
 |--------|----------|------|-------------|
 | Create and edit own missions (DRAFT only) | Yes | Yes | No |
-| Run the matcher on own missions (preview in DRAFT) | Yes | Yes | No |
+| Run the matcher on own missions (preview in DRAFT. The APPROVED preview is deferred.) | Yes | Yes | No |
 | Invite crew to own missions (APPROVED only) | Yes | Yes | No |
 | Approve or reject missions | Yes, not own missions | No | No |
-| View all missions and crew of the org | Yes | Yes, leave shows as "unavailable" without reason | No |
-| Edit org settings (skills) | Yes | No | No |
+| View all missions and crew of the org (missions built. The crew view is not built.) | Yes | Yes, leave shows as "unavailable" without reason | No |
+| Edit org settings (skills) (P1, not built) | Yes | No | No |
 | View own assignments, history and mission details | No | No | Yes |
 | Accept or decline own assignments | No | No | Yes |
 | View and edit own profile: skills and unavailability | No | No | Yes |
@@ -430,6 +436,8 @@ Crew members manage unavailable time slots, not available periods. Examples are 
 
 ### Deferred
 - P1: rank breakdown per suggestion, and reasons for excluded crew members.
+- P1: directors manage the skill catalogue, mission audit logs, and short references for missions and skills. None is built.
+- P0, deferred: rematch of open slots (requirement 19, build step 7). The design keeps this rule. The build deferred it because of time: slice 5 of the staffing plan is not built. The deferred slice lets the matcher preview run on an APPROVED mission and list only open slots. Today the preview runs only in DRAFT, and the permission row "Run the matcher on own missions" reads "preview in DRAFT". The lead invites by name in APPROVED. The decliner filter of the matcher already works, so the rematch needs no schema or API change.
 - P2: gap report when no match exists, resource constraints, rest buffer, mission priority.
 
 ## CLI
@@ -452,6 +460,14 @@ The CLI command is `mc`. It calls the API and stores the token locally after log
 | Availability | `mc profile availability list`, `add --from date --to date`, `remove id` |
 
 The CLI shows table views.
+
+**Built today.** All commands above work, except these:
+- `mc missions cancel|start|complete` are not built (build step 8).
+- `mc crew list` and `mc crew show <username>` are not built (build step 10). The command table above does not list them yet.
+- `mc missions show` prints no matcher preview. Requirement 9 needs it for APPROVAL_REQUIRED.
+- `mc missions match` works only on DRAFT missions.
+
+The CLI has these commands that the table does not list: `mc health`, `mc whoami`, `mc skills list`, `mc missions slots add|remove <mission-id>`. `mc missions edit` takes the changed fields as options. The slot commands use the slot position.
 
 ### Short references
 The API paths use UUIDs. The CLI uses UUIDs for missions and skills. Each entity in an API response contains the `id` and, if it has one, the short reference. A DB unique constraint enforces each short reference.
@@ -479,3 +495,43 @@ The API gets the next mission number with `UPDATE org SET mission_seq = mission_
 | 2026-10-11 | Add build step 10, org crew view. The demo becomes step 11. | Requirement 11 had no build step. Step 9 covers only the own profile of a crew member. |
 | 2026-10-11 | Decide the matcher cost order, the scarcity rule and the solver. | Build step 5 had to evaluate the scarcity term and scipy. |
 | 2026-10-11 | Key the transition table by action. | Withdraw and reject both go from APPROVAL_REQUIRED to DRAFT, with different actors. |
+| 2026-10-11 | Defer requirement 11 and build steps 8 and 10 to P1. Narrow requirement 23 to the demo of create, match, submit, approve, invite, accept and decline. | The time is short. The demo shows the core journey and the crew profile. |
+| 2026-10-11 | Add the build status, the not built items and the known gaps. | The design had no record of what the build covers. The approval view preview is not built. Build steps 8 and 10 are deferred to P1. The step 11 demo is in progress. |
+| 2026-10-11 | Defer the matcher preview on APPROVED missions (rematch of open slots). Build step 7 ships invite, accept, decline and the double booking check without it. | The lead can invite by name. The rematch needs no schema or API change and follows later. |
+
+## Implementation status
+### Build status
+Status on `develop` at commit `1e183de`. The design above stays the target. This table shows what the code does today.
+
+| Step | Status | Built | Not built |
+|------|--------|-------|-----------|
+| 1 Skeleton | Built | | |
+| 2 Data model and seed | Built | One migration. `mc-seed` loads 2 orgs, 20 users, skills, leave, 5 missions and assignments. | |
+| 3 Auth and tenant | Built | `mc login`, `whoami`, `logout`. JWT with `user_id`. Org-scoped data-access layer. 403 format. Info logging. | |
+| 4 Missions in DRAFT | Built | Create, edit, slots (add, remove by position), list, show. `GET /skills` and `mc skills list`. | |
+| 5 Matcher preview | Built | Filters, ranking (gap, scarcity, workload, username), scipy slot assignment. `mc missions match`. | The preview runs only in DRAFT. |
+| 6 Approval | Partly built | Submit, withdraw from APPROVAL_REQUIRED, approve, reject. No self approval. The additional director flag. `approved_by` and `approved_at` in the mission view. | The matcher preview in the approval view (requirement 9). Slice 3 of the approval plan is not built. `mc missions show` prints no preview. |
+| 7 Staffing | Partly built | Invite with all 12 checks. `mc assignments list`, `accept`, `decline`. Double booking check with a row lock. Decliner filter in the matcher. | The rematch of open slots in APPROVED (requirement 19). See [Deferred](#deferred). |
+| 8 Remaining transitions | Deferred to P1 | | Withdraw from APPROVED. Start with its guard. Complete. Cancel. Cancellation of assignments. The transition table has only the four actions of step 6. |
+| 9 Crew profile | Built | `mc profile show`, skills (list, set, remove), availability (list, add, remove). Profile conflicts (409). | |
+| 10 Org crew view | Deferred to P1 | `GET /users/{user_id}` only. Crew members see only their own record. | `GET /crew`, `GET /crew/{user_id}`, `mc crew list`, `mc crew show`. Directors and leads cannot list or show crew members (requirement 11). The mission list already shows all missions of the org. |
+| 11 Demo and test results | In progress | The README has run steps, the seed table and the test command. `scripts/demo.sh` and a README Demo section exist as uncommitted changes. The demo covers profile, create, match, submit, approve, invite, accept and decline. | Test results in the README (requirement 2). A commit of the demo. The demo has no rematch, no 403 or 404 check, no start, complete or cancel, and no crew view. |
+
+No P1 item is built. P2 is out of scope.
+
+P0 requirements not met: 2 (test results in the README), 9 (preview in the approval view) and 19 (rematch). Requirement 11 is deferred to P1. Requirement 23 is narrowed to the demo of step 11, which is in progress.
+
+### Open and deferred items
+- Open: matcher preview in the approval view (requirement 9, build step 6). `GET /missions/{id}` and `mc missions show` do not return the preview. Slice 3 of the `mission-approval` plan has the design.
+- Open: test results in the README (requirement 2).
+- Open: commit of the demo (`scripts/demo.sh`, README). The `readme-demo` plan has one slice, started, not complete.
+- Deferred to P0 later: rematch of open slots (requirement 19). See [Deferred](#deferred).
+- Deferred to P1: remaining transitions and assignment cancellation (build step 8). No plan exists.
+- Deferred to P1: org crew view (requirement 11, build step 10). The `org-crew-view` plan has three slices, none built.
+
+### Known gaps in the built code
+The slice reviews list these items. None blocks a happy path.
+- Two concurrent `PUT /profile/skills/{id}` calls for the same new skill can give a 500 (`IntegrityError`).
+- A body validation error (422) writes no log line. This applies to the mission routes and to `POST /profile/unavailability`.
+- Accept and decline have no test for info-level logging, by decision. The code logs each state change and rejection. Older `caplog` tests of invite, approval and auth still exist.
+- `mc missions approve` and `reject` have no CLI test for a 409.
