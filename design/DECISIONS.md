@@ -82,6 +82,8 @@ Each step ends with its happy path test and cross org check. Each step is one or
 #### Matching
 3. Decision insights for lead: Excluded members: Why?
 4. Rank breakdown per suggestion: Why is this the best person for the slot
+#### CLI
+5. Short references for missions (`MSN-<n>`) and skills (`slug`), see Short references
 ...
 
 ### P2: Scoped as outside of this session
@@ -109,7 +111,7 @@ Each step ends with its happy path test and cross org check. Each step is one or
 17. Scalability, Observability, IaC, offline jobs, etc. 
 
 ## Ambiguity resolution
-1. Different skill taxonomy per org -> Skills owned by each org with fixed proficiency scale (1-5)
+1. Different skill taxonomy per org -> Skills owned by each org with fixed proficiency scale (1-5). Skill names are unique per org: UNIQUE(org_id, name)
 2. Different approval processes per org -> Initial scope will be one single director approval in code. Later extension to DB stored approval configs
 3. Leads cannot approve their own missions -> One role per user with hierarchy Director > Lead, so a director can also lead missions. The mission lead can never approve their own mission. A director who is also leading a mission needs a second director to get approval. On mission creation the API and CLI flag that this mission requires an additional director for approval.
 4. Who can be assinged to a mission: Only crew members can be assigned to missions. A lead is never a crew member and a director is never a crew member. The Director > Lead hierarchy does not include Crew.
@@ -123,7 +125,12 @@ Each step ends with its happy path test and cross org check. Each step is one or
     - Resource exists in another org -> 404, so the response never reveals that it exists
     - Resource exists in the own org but the role has no access -> 403 with role and rule
 11. Crews accept missions -> Crew members need to respond to approved missions. Only an approved mission is sent to the Crew members to ensure the whole mission is funded before reserving scarce skills for a mission. Otherwise skills might be missing for other missions currently being planned. 
-12. Mission requirements -> A mission has slots: skill + minimum level. One skill per slot. One crew member fills max one slot per mission.
+12. Mission requirements -> A mission has slots: skill + minimum level. One skill per slot. One crew member fills max one slot per mission. Deleting a slot (DRAFT only) is a soft delete (archived_at), so assignment history keeps its reference. Matcher, invite and start guard ignore archived slots.
+13. Staffing state -> No additional mission state (e.g. STAFFING). The assignments reflect the staffing progress
+14. Crew profile change conflicts with an INVITED / ACCEPTED assignment -> API rejects and the error names the conflict:
+    - Added unavailability overlaps the mission dates
+    - Lowered skill level is below the slot minimum
+    - Removed skill is required by the slot
 
 ## RBAC role resolution
 - Directors 
@@ -151,19 +158,21 @@ Each step ends with its happy path test and cross org check. Each step is one or
     - Every referenced id (e.g. skill_id, crew_id) is looked up with org filter. Cross org returns no data
 - Composite foreign keys as second layer for writes so DB rejects cross org links even if the data-access layer has a bug. They do not protect reads. Reads rely on the data-access layer only
     - Every tenant table has org_id, parent tables have UNIQUE(org_id, id)
-    - Child tables reference (org_id, x_id) -> parent(org_id, id): assignment -> mission / user, assignment (org_id, mission_id, requirement_id) -> mission_requirement (org_id, mission_id, id) so the slot belongs to the same mission, mission_requirement -> mission / skill, crew_skill -> user / skill, unavailability -> user, mission.lead_id -> user
+    - Child tables reference (org_id, x_id) -> parent(org_id, id): assignment -> mission / user, assignment (org_id, mission_id, requirement_id) -> mission_requirement (org_id, mission_id, id) so the slot belongs to the same mission, mission_requirement -> mission / skill, crew_skill -> user / skill, unavailability -> user, mission.lead_id -> user, mission.approved_by -> user
     - Only crew can be assigned is not covered by FK -> checked in service layer
 - Will ensure via cross org access checks in the happy path tests
 - Postgres RLS would be the second layer for reads - Deferred to P2
 
 ## Short references
-UUID primary keys stay internal. Each resource also has a human readable key for the CLI, enforced by a DB unique constraint.
+P0: API paths use UUIDs, so paths stay stable. The CLI uses UUIDs for missions and skills. Every entity in an API response contains the id and, if it has one, the short reference. Short references are enforced by a DB unique constraint.
 - Users: `username`, globally unique, because `mc login --user` has no org context. Crew references in the CLI use the username
+- Slots: position in the mission (1, 2, 3) with partial unique index on (mission_id, position) WHERE archived_at IS NULL, so a new slot can reuse the position of an archived slot
+- Slots: partial unique index on assignment (requirement_id) WHERE status IN (INVITED, ACCEPTED): one active assignment per slot
+- Assignments: referenced by mission UUID. Partial unique index: one INVITED / ACCEPTED assignment per (mission_id, user_id)
+
+P1: short references for missions and skills in the CLI
 - Skills: `slug` with UNIQUE(org_id, slug). A duplicate slug is rejected with a clear error, no auto suffix
 - Missions: per org code `MSN-<n>` with UNIQUE(org_id, number). Next number via `UPDATE org SET mission_seq = mission_seq + 1 ... RETURNING` in the same transaction. The row lock serializes concurrent creates, so no collisions
-- Slots: position in the mission (1, 2, 3) with UNIQUE(mission_id, position)
-- Assignments: referenced by mission code. Partial unique index: one INVITED / ACCEPTED assignment per (mission_id, user_id)
-- Slots: partial unique index on assignment (requirement_id) WHERE status IN (INVITED, ACCEPTED): one active assignment per slot
 
 ## Initial mission lifecycle
 1. DRAFT: Mission lead creates, edits mission. Can preview the matcher. If the lead is a director, the mission is flagged as requiring an additional director for approval. The flag is derived from the lead's current role and never stored
@@ -171,7 +180,7 @@ UUID primary keys stay internal. Each resource also has a human readable key for
     - Director rejects -> back to DRAFT (no comment, P2)
     - Lead withdraws -> back to DRAFT
 3. APPROVED: Mission is approved and mission lead performs staffing. Inviting the crew. Awaiting their response. 
-    - Lead withdraws mission back to DRAFT to change details -> all INVITED / ACCEPTED assignments become CANCELLED
+    - Lead withdraws mission back to DRAFT to change details -> all INVITED / ACCEPTED assignments become CANCELLED, approved_by / approved_at are cleared
 4. ACTIVE: Mission lead started the mission. Guard: every slot has an ACCEPTED assignment
 5. COMPLETED: Mission lead completed the mission
 6. CANCELLED: Cancelled by mission lead (no reason, P2). Changing to this state from any state except COMPLETED. All INVITED / ACCEPTED assignments become CANCELLED.
@@ -214,7 +223,7 @@ API + CLI. One language (Python) for API and CLI keeps the stack small
 1. CLI Typer + httpx + Rich: typed commands, generated help, readable tables
     - CLI to API 
     - Stores the token locally after login
-    - Table views by default, flag for scripting?
+    - Table views only, no flag for scripting
 2. Backend FastAPI +Pydantic + SQLAlchemy with Alembic: Typed API with generated OpenAPI docs and safe DB access with migrations
     - Matching could require additional libs for optimization problem or naive solution? to be decided in low level step
     - Typed API client: shared Pydantic package in the same repository. API and CLI import the same request / response types. No generated OpenAPI client, so no regeneration step. The shared package depends on Pydantic only, no FastAPI or SQLAlchemy
@@ -226,17 +235,11 @@ API + CLI. One language (Python) for API and CLI keeps the stack small
 ### MVP CLI commands v0
 1. Login: mc login --user username, mc logout
 2. Missions list: mc missions list
-3. Mission detail: mc missions show MSN-42
+3. Mission detail: mc missions show <mission-id>
     - Edit, submit, approve or reject: mc missions create|edit|submit|withdraw|approve|reject|cancel|start|complete
-    - Staff with the matcher: mc missions match MSN-42, mc missions invite MSN-42 --slot 1 --crew username (APPROVED only)
+    - Staff with the matcher: mc missions match <mission-id>, mc missions invite <mission-id> --slot 1 --crew username (APPROVED only)
 4. My assignments (Crew): mc assignments list (current and history)
-    - Accept, decline: mc assignments accept|decline MSN-42
+    - Accept, decline: mc assignments accept|decline <mission-id>
 5. My profile (Crew): mc profile show
-    - Skills: mc profile skills set skill-slug --level n, mc profile skills remove skill-slug
+    - Skills: mc profile skills set <skill-id> --level n, mc profile skills remove <skill-id>
     - Availability: mc profile availability list / add --from date --to date / remove id
-
-## Open questions / follow ups
-- Additonal step required to indicate invited members? INVIATION_PENDING / STAFFING?
-- Crew adds unavailability that overlaps an INVITED / ACCEPTED assignment: reject, warn or auto-decline?
-- Crew lowers a skill level below a slot minimum while INVITED / ACCEPTED: keep, warn or flag to lead?
-- API paths: short references (MSN-42) or UUIDs? Codes simplify the CLI, UUIDs keep paths stable if a code ever changes

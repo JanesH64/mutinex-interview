@@ -79,6 +79,7 @@ P1 extends the MVP if time permits in this session.
 2. Mission audit logs.
 3. Decision insights for the lead: why the matcher excluded a crew member.
 4. Rank breakdown per suggestion: why a crew member is the best fit for the slot.
+5. Short references for missions (`MSN-<n>`) and skills (`slug`) in the CLI. See [Short references](#short-references).
 
 ### P2
 P2 is out of scope for this session.
@@ -124,7 +125,7 @@ The API and the CLI use one language (Python). This keeps the stack small.
 Each entity has an `org_id`. See [Tenant isolation](#tenant-isolation).
 
 ### Conventions
-- `id` is a UUID primary key. It stays internal. The CLI uses [short references](#short-references).
+- `id` is a UUID primary key. The API paths and the CLI use it. Users and slots also have [short references](#short-references).
 - Each tenant table has `org_id NOT NULL`. Parent tables have `UNIQUE(org_id, id)` for composite foreign keys.
 - Each table has `created_at` and `updated_at`. The tables below do not show them.
 - Fields marked *(derived)* are not stored. The API computes them at query time.
@@ -136,7 +137,6 @@ The tenant root.
 |-------|------|-------|
 | id | uuid | PK |
 | name | text | |
-| mission_seq | int | Default 0. The counter for the next mission number. |
 
 ### User
 
@@ -155,8 +155,7 @@ The skill catalogue of the org.
 |-------|------|-------|
 | id | uuid | PK |
 | org_id | uuid | FK to organization |
-| slug | text | `UNIQUE(org_id, slug)` |
-| name | text | |
+| name | text | `UNIQUE(org_id, name)` |
 | description | text | Optional |
 
 ### CrewSkill
@@ -189,8 +188,6 @@ The skill profile of a crew member. It links a user to a skill.
 |-------|------|-------|
 | id | uuid | PK |
 | org_id | uuid | |
-| number | int | `UNIQUE(org_id, number)` |
-| code | text *(derived)* | `MSN-<number>` |
 | title | text | |
 | description | text | Optional |
 | lead_id | uuid | `(org_id, lead_id)` to user. The service layer checks the role `LEAD` or `DIRECTOR`. |
@@ -198,7 +195,7 @@ The skill profile of a crew member. It links a user to a skill.
 | start_date | date | |
 | end_date | date | `CHECK end_date >= start_date` |
 | approved_by | uuid | Optional. `(org_id, approved_by)` to user. A minimal audit trail until the P1 audit log. |
-| approved_at | timestamptz | Optional |
+| approved_at | timestamptz | Optional. The API clears `approved_by` and `approved_at` when the lead withdraws the mission from APPROVED to DRAFT. |
 | requires_additional_director | bool *(derived)* | True if the current role of the lead is `DIRECTOR`. Never stored. |
 
 ### MissionRequirement
@@ -209,10 +206,13 @@ A slot of a mission: one skill with a minimum level.
 | id | uuid | PK |
 | org_id | uuid | |
 | mission_id | uuid | `(org_id, mission_id)` to mission |
-| position | smallint | `UNIQUE(mission_id, position)` |
+| position | smallint | Partial unique index on `(mission_id, position) WHERE archived_at IS NULL`. A new slot can use the position of an archived slot. |
 | skill_id | uuid | `(org_id, skill_id)` to skill |
 | min_level | smallint | `CHECK` 1 to 5 |
+| archived_at | timestamptz | Optional. Set when the lead deletes the slot. |
 
+- The lead deletes a slot only in DRAFT. The API archives the slot and does not delete the row. Assignment history keeps its reference to the slot.
+- Archived slots are not part of the mission. The matcher, the invite and the start guard ignore them.
 - The table also has `UNIQUE(org_id, mission_id, id)`. The assignment references this key.
 
 ### Assignment
@@ -225,7 +225,6 @@ A slot of a mission: one skill with a minimum level.
 | requirement_id | uuid | `(org_id, mission_id, requirement_id)` to mission_requirement. The slot belongs to the same mission. |
 | user_id | uuid | `(org_id, user_id)` to user. The service layer checks the role `CREW`. |
 | status | enum | `INVITED`, `ACCEPTED`, `DECLINED`, `CANCELLED` |
-| invited_at | timestamptz | |
 | responded_at | timestamptz | Optional |
 
 - Partial unique index on `(mission_id, user_id) WHERE status IN (INVITED, ACCEPTED)`: one active assignment per crew member and mission.
@@ -239,7 +238,6 @@ The DB does not store these values. The API computes them at query time.
 |-------|--------|
 | Workload | Booked mission days of INVITED and ACCEPTED assignments in a time window before and after the mission. The window (example: 90 days) is a code constant. |
 | Decliner exclusion | DECLINED assignments of the mission. The API never deletes them, because the matcher reads them. |
-| Mission code | `MSN-<number>` |
 | Additional director flag | The current role of the mission lead |
 
 ## Mission lifecycle workflow
@@ -264,9 +262,9 @@ stateDiagram-v2
 
 | State | Description |
 |-------|-------------|
-| DRAFT | The lead creates and edits the mission and runs the matcher preview. If the lead is a director, the mission shows that it needs an additional director for approval. |
+| DRAFT | The lead creates and edits the mission and its slots, and runs the matcher preview. If the lead is a director, the mission shows that it needs an additional director for approval. |
 | APPROVAL_REQUIRED | The mission details are final. A director sees the matcher preview and approves or rejects. A rejection returns the mission to DRAFT without a comment. The lead can withdraw the mission to DRAFT. |
-| APPROVED | The lead staffs the mission and invites crew members. To change details, the lead withdraws the mission to DRAFT. All INVITED and ACCEPTED assignments then become CANCELLED. |
+| APPROVED | The lead staffs the mission and invites crew members. To change details, the lead withdraws the mission to DRAFT. All INVITED and ACCEPTED assignments then become CANCELLED. The API clears `approved_by` and `approved_at`. |
 | ACTIVE | The lead started the mission. Guard: each slot has an ACCEPTED assignment. |
 | COMPLETED | The lead completed the mission. |
 | CANCELLED | The lead cancelled the mission, without a reason. All states except COMPLETED can go to CANCELLED. All INVITED and ACCEPTED assignments become CANCELLED. |
@@ -277,9 +275,12 @@ stateDiagram-v2
 - The code holds the allowed transitions as `(from, to) -> allowed roles`. This is the extension point for approval workflow customization (P2).
 - P0 uses one director approval. A later version can store approval configurations in the DB.
 - Invites happen only after approval. This way, unfunded missions do not reserve scarce skills.
+- There is no separate staffing state. The assignment states show the staffing progress of an APPROVED mission.
 
 ### Mission requirements
 A mission has slots. A slot is one skill with a minimum proficiency level. A crew member fills a maximum of one slot per mission.
+
+The lead deletes a slot only in DRAFT. The API archives the slot (soft delete), so the assignment history keeps its reference. The matcher, the invite and the start guard ignore archived slots. See [MissionRequirement](#missionrequirement).
 
 ### Assignment states
 
@@ -300,6 +301,15 @@ stateDiagram-v2
 | CANCELLED | The mission went back to DRAFT or the lead cancelled it. The crew member is available again. |
 
 The API checks for double booking at invite and at accept. The service locks the user row of the crew member (`SELECT ... FOR UPDATE`). In the same transaction, it checks for date overlap with INVITED and ACCEPTED assignments. A DB constraint is not possible, because the assignment does not hold the mission dates.
+
+### Profile conflicts
+The API rejects a crew profile change that conflicts with an INVITED or ACCEPTED assignment. The error response names the conflict.
+
+| Change | Conflict |
+|--------|----------|
+| Add unavailability | The unavailability overlaps the dates of the mission. |
+| Lower a skill level | The new level is below the minimum level of the slot. |
+| Remove a skill | The slot requires the skill. |
 
 ## Authentication & Authorization
 ### Authentication
@@ -411,34 +421,33 @@ The CLI command is `mc`. It calls the API and stores the token locally after log
 |----------|---------|
 | Login | `mc login --user username`, `mc logout` |
 | Missions list | `mc missions list` |
-| Mission detail | `mc missions show MSN-42` |
+| Mission detail | `mc missions show <mission-id>` |
 | Mission lifecycle | `mc missions create\|edit\|submit\|withdraw\|approve\|reject\|cancel\|start\|complete` |
-| Matcher | `mc missions match MSN-42` |
-| Invite (APPROVED only) | `mc missions invite MSN-42 --slot 1 --crew username` |
+| Matcher | `mc missions match <mission-id>` |
+| Invite (APPROVED only) | `mc missions invite <mission-id> --slot 1 --crew username` |
 | My assignments (crew), current and history | `mc assignments list` |
-| Respond to assignment | `mc assignments accept\|decline MSN-42` |
+| Respond to assignment | `mc assignments accept\|decline <mission-id>` |
 | My profile (crew) | `mc profile show` |
-| Skills | `mc profile skills set skill-slug --level n`, `mc profile skills remove skill-slug` |
+| Skills | `mc profile skills set <skill-id> --level n`, `mc profile skills remove <skill-id>` |
 | Availability | `mc profile availability list`, `add --from date --to date`, `remove id` |
 
-The CLI shows table views by default.
+The CLI shows table views.
 
 ### Short references
-UUID primary keys stay internal. Each resource also has a human-readable key for the CLI. A DB unique constraint enforces each key.
+The API paths use UUIDs. The CLI uses UUIDs for missions and skills. Each entity in an API response contains the `id` and, if it has one, the short reference. A DB unique constraint enforces each short reference.
 
 | Resource | Key | Constraint |
 |----------|-----|------------|
 | User | `username` | Globally unique, because `mc login --user` has no org context. The CLI references crew members by username. |
-| Skill | `slug` | `UNIQUE(org_id, slug)`. The API rejects a duplicate slug with a clear error. There is no automatic suffix. |
+| Slot | Position in the mission (1, 2, 3) | Partial unique index on `(mission_id, position) WHERE archived_at IS NULL`. Partial unique index on assignment `(requirement_id) WHERE status IN (INVITED, ACCEPTED)`: one active assignment per slot. |
+| Assignment | Mission UUID | Partial unique index: one INVITED or ACCEPTED assignment per `(mission_id, user_id)` |
+
+#### P1: Mission and skill short references
+P1 adds short references for missions and skills in the CLI.
+
+| Resource | Key | Constraint |
+|----------|-----|------------|
 | Mission | `MSN-<n>` per org | `UNIQUE(org_id, number)`. See below. |
-| Slot | Position in the mission (1, 2, 3) | `UNIQUE(mission_id, position)`. Partial unique index on assignment `(requirement_id) WHERE status IN (INVITED, ACCEPTED)`: one active assignment per slot. |
-| Assignment | Mission code | Partial unique index: one INVITED or ACCEPTED assignment per `(mission_id, user_id)` |
+| Skill | `slug` | `UNIQUE(org_id, slug)`. The API rejects a duplicate slug with a clear error. There is no automatic suffix. |
 
 The API gets the next mission number with `UPDATE org SET mission_seq = mission_seq + 1 ... RETURNING` in the same transaction. The row lock serializes concurrent creates, so numbers do not collide.
-
-## Open questions
-~~1. Is an additional mission state necessary to show invited crew members? Example: `INVITATION_PENDING` or `STAFFING`.~~ no reflected in assignments table
-2. A crew member adds unavailability that overlaps an INVITED or ACCEPTED assignment. Does the API reject, warn or decline automatically? - Flag in API response that this will cause issue and reject. 
-3. A crew member lowers a skill level below a slot minimum while INVITED or ACCEPTED. Does the API keep the assignment, warn or flag it to the lead? Flag in API response that this will cause issue and reject. 
-4. Do API paths use short references (`MSN-42`) or UUIDs? Codes make the CLI simpler. UUIDs keep paths stable if a code changes. API uses UUIDs still. short codes only in CLI 
-~~5. Does the CLI need a flag for script output in addition to table views? ~~
