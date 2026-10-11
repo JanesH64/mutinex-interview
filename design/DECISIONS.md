@@ -166,6 +166,7 @@ Each step ends with its happy path test and cross org check. Each step is one or
 ## Short references
 P0: API paths use UUIDs, so paths stay stable. The CLI uses UUIDs for missions and skills. Every entity in an API response contains the id and, if it has one, the short reference. Short references are enforced by a DB unique constraint.
 - Users: `username`, globally unique, because `mc login --user` has no org context. Crew references in the CLI use the username
+    - Follow-up: the unique constraint is case-sensitive for now, so `Ava` and `ava` can both exist. Later: a unique index on `lower(username)` and a case-insensitive lookup in `mc login` and `--crew`
 - Slots: position in the mission (1, 2, 3) with partial unique index on (mission_id, position) WHERE archived_at IS NULL, so a new slot can reuse the position of an archived slot
 - Slots: partial unique index on assignment (requirement_id) WHERE status IN (INVITED, ACCEPTED): one active assignment per slot
 - Assignments: referenced by mission UUID. Partial unique index: one INVITED / ACCEPTED assignment per (mission_id, user_id)
