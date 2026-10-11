@@ -147,7 +147,6 @@ def update_mission(
     end = changes.get("end_date", mission.end_date)
     if end < start:
         logger.info("edit of mission %s rejected: end before start", mission.id)
-        scope.session.rollback()
         raise HTTPException(422, "end_date must not be before start_date")
     for field, value in changes.items():
         setattr(mission, field, value)

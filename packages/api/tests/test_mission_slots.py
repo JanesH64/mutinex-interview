@@ -132,12 +132,22 @@ def test_non_owner_in_the_own_org_gets_403(client, make_user, session):
     assert rows(session, mission) == before
 
 
-def test_not_draft_gives_409_and_changes_no_slot(client, make_user, session):
+@pytest.mark.parametrize(
+    "status",
+    [
+        MissionStatus.APPROVAL_REQUIRED,
+        MissionStatus.APPROVED,
+        MissionStatus.ACTIVE,
+        MissionStatus.COMPLETED,
+        MissionStatus.CANCELLED,
+    ],
+)
+def test_not_draft_gives_409_and_changes_no_slot(client, make_user, session, status):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     skill = make_skill(session, lead.org_id, "S1")
     add_slot(session, mission, 1, skill)
-    mission.status = MissionStatus.APPROVED
+    mission.status = status
     session.flush()
     before = rows(session, mission)
     url = f"/missions/{mission.id}/slots"
@@ -146,9 +156,28 @@ def test_not_draft_gives_409_and_changes_no_slot(client, make_user, session):
     for response in (add, remove):
         assert response.status_code == 409
         assert response.json() == {
-            "detail": "Mission is APPROVED. Edits are allowed only in DRAFT."
+            "detail": f"Mission is {status.value}. Edits are allowed only in DRAFT."
         }
     assert rows(session, mission) == before
+
+
+def test_owner_gets_409_before_skill_check_and_non_owner_403_on_approved(
+    client, make_user, session
+):
+    owner = make_user(UserRole.LEAD)
+    other = make_user(UserRole.LEAD, org=session.get(Organization, owner.org_id))
+    mission = make_mission(session, owner)
+    mission.status = MissionStatus.APPROVED
+    session.flush()
+    patch = client.patch(f"/missions/{mission.id}", json={"title": "X"}, headers=auth(other))
+    assert patch.status_code == 403
+    assert patch.json() == {"role": other.role.value, "rule": NOT_OWNER}
+    add = client.post(
+        f"/missions/{mission.id}/slots",
+        json={"skill_id": str(uuid4()), "min_level": 2},
+        headers=auth(owner),
+    )
+    assert add.status_code == 409
 
 
 def test_other_org_gives_404_and_does_not_change(client, make_user, session):
@@ -174,11 +203,13 @@ def test_crew_gets_403(client, make_user, session):
     crew = make_user(UserRole.CREW)
     lead = make_user(UserRole.LEAD, org=session.get(Organization, crew.org_id))
     mission = make_mission(session, lead)
+    foreign = make_mission(session, make_user(UserRole.LEAD))
     skill = make_skill(session, lead.org_id, "S1")
     add_slot(session, mission, 1, skill)
-    url = f"/missions/{mission.id}/slots"
-    add = client.post(url, json={"skill_id": str(skill.id), "min_level": 2}, headers=auth(crew))
-    remove = client.delete(f"{url}/1", headers=auth(crew))
-    for response in (add, remove):
-        assert response.status_code == 403
-        assert response.json() == CREW_403
+    for target in (mission, foreign):
+        url = f"/missions/{target.id}/slots"
+        add = client.post(url, json={"skill_id": str(skill.id), "min_level": 2}, headers=auth(crew))
+        remove = client.delete(f"{url}/1", headers=auth(crew))
+        for response in (add, remove):
+            assert response.status_code == 403
+            assert response.json() == CREW_403

@@ -38,7 +38,7 @@ def error_message(response: httpx.Response) -> str:
 
 
 def send(method: str, path: str, *, json: dict | None = None) -> httpx.Response:
-    """Send one request. Exit 1 on a connection error. A status >= 400 is returned."""
+    """Send one request. Exit 1 on a connection error. A status that is not 2xx is handled."""
     token = load_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
@@ -56,6 +56,6 @@ def fail(response: httpx.Response) -> NoReturn:
 
 def request(method: str, path: str, *, json: dict | None = None) -> httpx.Response:
     response = send(method, path, json=json)
-    if response.status_code >= 400:
+    if not response.is_success:
         fail(response)
     return response
