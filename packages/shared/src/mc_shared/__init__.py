@@ -27,6 +27,13 @@ class UnavailabilityReason(StrEnum):
     MEETING = "MEETING"
 
 
+class AssignmentStatus(StrEnum):
+    INVITED = "INVITED"
+    ACCEPTED = "ACCEPTED"
+    DECLINED = "DECLINED"
+    CANCELLED = "CANCELLED"
+
+
 class Health(BaseModel):
     status: str
     db: str
@@ -87,6 +94,13 @@ class SlotOut(BaseModel):
     skill_id: UUID
     skill_name: str
     min_level: int
+    crew_username: str | None = None
+    assignment_status: AssignmentStatus | None = None
+
+
+class InviteCreate(BaseModel):
+    position: int
+    username: str = Field(min_length=1)
 
 
 class SlotCreate(BaseModel):
