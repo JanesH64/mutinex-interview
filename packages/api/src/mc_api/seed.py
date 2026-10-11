@@ -50,6 +50,7 @@ USERS = [
     ("A", "hana", "Hana Sato", "CREW", {"Medicine": 3, "Robotics": 4}),
     ("A", "ivan", "Ivan Petrov", "CREW", {"Piloting": 4, "Communications": 3}),
     ("A", "jo", "Jo Kim", "CREW", {"Geology": 4, "Communications": 2}),
+    ("A", "kai", "Kai Mensah", "CREW", {"EVA": 3}),
     ("B", "nora", "Nora Quinn", "DIRECTOR", {}),
     ("B", "nick", "Nick Alvarez", "LEAD", {}),
     ("B", "nell", "Nell Foster", "CREW", {"Piloting": 4, "EVA": 3}),
@@ -89,6 +90,10 @@ MISSIONS = [
      "nora", at(10, 2, 9),
      [("Welding", 3), ("EVA", 3)],
      [(1, "nia", "INVITED", None), (2, "ned", "ACCEPTED", at(10, 7))]),
+    ("A", "Polar Ice Survey", "DRAFT", date(2027, 1, 11), date(2027, 1, 24), "leo",
+     None, None,
+     [("Piloting", 3), ("EVA", 3), ("Medicine", 2)],
+     []),
 ]  # fmt: skip
 
 
@@ -129,7 +134,7 @@ def seed(session: Session) -> None:
         mission = Mission(
             id=uuid.uuid4(), org_id=orgs[o].id, title=title, lead_id=users[lead].id,
             status=MissionStatus(status), start_date=start, end_date=end,
-            approved_by=users[approver].id, approved_at=approved_at,
+            approved_by=users[approver].id if approver else None, approved_at=approved_at,
         )  # fmt: skip
         slot_rows = [
             MissionRequirement(

@@ -10,6 +10,7 @@ dependencies = [
     "psycopg[binary]",
     "alembic",
     "pyjwt>=2.15.1",
+    "scipy>=1.18.1",
 ]
 
 [project.scripts]

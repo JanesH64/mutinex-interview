@@ -37,7 +37,7 @@ uv run pytest
 ```
 
 ## Seed data
-`mc-seed` loads a fixed demo dataset: 2 orgs, 19 users, skills, leave, 4 missions and their assignments.
+`mc-seed` loads a fixed demo dataset: 2 orgs, 20 users, skills, leave, 5 missions and their assignments.
 
 **Warning:** `mc-seed` deletes all data in the database of `DATABASE_URL`. Use it only on a local demo database.
 
@@ -57,6 +57,7 @@ uv run pytest
 | `hana` | Hana Sato | Artemis Space Agency | CREW |
 | `ivan` | Ivan Petrov | Artemis Space Agency | CREW |
 | `jo` | Jo Kim | Artemis Space Agency | CREW |
+| `kai` | Kai Mensah | Artemis Space Agency | CREW |
 | `nora` | Nora Quinn | Nova Orbital | DIRECTOR |
 | `nick` | Nick Alvarez | Nova Orbital | LEAD |
 | `nell` | Nell Foster | Nova Orbital | CREW |
@@ -64,6 +65,14 @@ uv run pytest
 | `nia` | Nia Banda | Nova Orbital | CREW |
 
 The reference window for the matcher is 2027-01-11 to 2027-01-24 in org Artemis Space Agency.
+The DRAFT mission "Polar Ice Survey" uses this window.
+
+Run the matcher preview as its lead:
+```sh
+uv run mc login --user leo
+uv run mc missions list
+uv run mc missions match <id of "Polar Ice Survey">
+```
 
 ## Configuration
 The defaults match `docker-compose.yml`, so the run steps need no configuration. To override a value, copy `.env.example` to `.env`, edit it and load it with `uv run --env-file .env <command>`.

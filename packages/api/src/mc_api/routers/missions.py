@@ -7,15 +7,19 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from mc_api.dependencies import get_current_user, get_scope, require_roles
 from mc_api.errors import Forbidden
-from mc_api.models import AppUser, Mission, MissionRequirement, Skill
+from mc_api.matcher import Candidate, assign
+from mc_api.models import AppUser, CrewSkill, Mission, MissionRequirement, Skill
 from mc_api.scope import OrgScope
 from mc_shared import (
+    CrewSuggestion,
+    MatchPreview,
     MissionCreate,
     MissionOut,
     MissionStatus,
     MissionSummary,
     MissionUpdate,
     SlotCreate,
+    SlotMatch,
     SlotOut,
     UserRole,
 )
@@ -214,3 +218,45 @@ def remove_slot(
     scope.session.commit()
     logger.info("slot %s removed from mission %s by user %s", position, mission.id, user.id)
     return mission_out(scope, mission)
+
+
+@router.get("/{mission_id}/match")
+def match_preview(
+    mission_id: UUID,
+    scope: Scope,
+    user: Annotated[AppUser, Depends(get_current_user)],
+) -> MatchPreview:
+    mission = scope.get(Mission, mission_id)
+    if mission.lead_id != user.id:
+        raise Forbidden(user.role, "Directors and leads run the matcher only on their own missions")
+    if mission.status != MissionStatus.DRAFT:
+        logger.info("match preview rejected: mission %s is %s", mission.id, mission.status)
+        raise HTTPException(
+            409, f"Mission is {mission.status}. The matcher preview is allowed only in DRAFT."
+        )
+    slots = mission_out(scope, mission).slots
+    rows = scope.session.execute(
+        scope.select(CrewSkill)
+        .add_columns(AppUser)
+        .join(AppUser, (AppUser.org_id == CrewSkill.org_id) & (AppUser.id == CrewSkill.user_id))
+        .where(AppUser.role == UserRole.CREW)
+    ).all()
+    users: dict[UUID, AppUser] = {}
+    skills: dict[UUID, dict[UUID, int]] = {}
+    holders: dict[UUID, int] = {}
+    for cs, u in rows:
+        users[u.id] = u
+        skills.setdefault(u.id, {})[cs.skill_id] = cs.level
+        holders[cs.skill_id] = holders.get(cs.skill_id, 0) + 1
+    candidates = [Candidate(uid, users[uid].username, sk) for uid, sk in skills.items()]
+    matches = []
+    for slot, c in zip(slots, assign(slots, candidates, holders), strict=True):
+        suggestion = c and CrewSuggestion(
+            user_id=c.user_id,
+            username=c.username,
+            display_name=users[c.user_id].display_name,
+            level=c.skills[slot.skill_id],
+            workload_days=c.workload_days,
+        )
+        matches.append(SlotMatch(slot=slot, suggestion=suggestion))
+    return MatchPreview(mission_id=mission.id, slots=matches)
