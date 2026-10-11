@@ -147,6 +147,54 @@ def editable_mission(scope: OrgScope, user: AppUser, mission_id: UUID) -> Missio
     return mission
 
 
+TRANSITIONS: dict[str, tuple[MissionStatus, MissionStatus]] = {
+    "submit": (MissionStatus.DRAFT, MissionStatus.APPROVAL_REQUIRED),
+    "withdraw": (MissionStatus.APPROVAL_REQUIRED, MissionStatus.DRAFT),
+}
+
+
+def own_locked_mission(scope: OrgScope, user: AppUser, mission_id: UUID) -> Mission:
+    """Lock the mission. 404, then 403 for a non-owner (the submit and withdraw actor rule)."""
+    mission = scope.get(Mission, mission_id, for_update=True)
+    if mission.lead_id != user.id:
+        raise Forbidden(
+            user.role, "Directors and leads submit and withdraw only their own missions"
+        )
+    return mission
+
+
+def transition(scope: OrgScope, user: AppUser, mission: Mission, action: str) -> MissionOut:
+    """Move a locked mission. The route checks the actor first. 409 for a wrong status."""
+    source, target = TRANSITIONS[action]
+    if mission.status != source:
+        logger.info("%s of mission %s rejected: status %s", action, mission.id, mission.status)
+        raise HTTPException(
+            409, f"Mission is {mission.status}. {action.capitalize()} is allowed only in {source}."
+        )
+    mission.status = target
+    scope.session.commit()
+    logger.info("mission %s: %s by user %s, now %s", mission.id, action, user.id, target)
+    return mission_out(scope, mission)
+
+
+@router.post("/{mission_id}/submit")
+def submit_mission(
+    mission_id: UUID,
+    scope: Scope,
+    user: Annotated[AppUser, Depends(get_current_user)],
+) -> MissionOut:
+    return transition(scope, user, own_locked_mission(scope, user, mission_id), "submit")
+
+
+@router.post("/{mission_id}/withdraw")
+def withdraw_mission(
+    mission_id: UUID,
+    scope: Scope,
+    user: Annotated[AppUser, Depends(get_current_user)],
+) -> MissionOut:
+    return transition(scope, user, own_locked_mission(scope, user, mission_id), "withdraw")
+
+
 @router.patch("/{mission_id}")
 def update_mission(
     mission_id: UUID,
