@@ -70,7 +70,8 @@ Each step ends with its happy path test and its cross-org check. Each step is on
 7. Staffing: invite, `mc assignments list / accept / decline`, double booking check, decliner exclusion on rematch.
 8. Remaining transitions: withdraw from APPROVED to DRAFT, start (with guard), complete, cancel. Assignment cancellation.
 9. Crew profile: `mc profile show`, skills, availability.
-10. Scripted end-to-end CLI demo and test results in the README.
+10. Org crew view: directors and leads list and show the crew members of the org (requirement 11). Leads see leave as "unavailable" without the reason.
+11. Scripted end-to-end CLI demo and test results in the README.
 
 ### P1
 P1 extends the MVP if time permits in this session.
@@ -451,3 +452,9 @@ P1 adds short references for missions and skills in the CLI.
 | Skill | `slug` | `UNIQUE(org_id, slug)`. The API rejects a duplicate slug with a clear error. There is no automatic suffix. |
 
 The API gets the next mission number with `UPDATE org SET mission_seq = mission_seq + 1 ... RETURNING` in the same transaction. The row lock serializes concurrent creates, so numbers do not collide.
+
+## Changes
+
+| Date | Change | Reason |
+|------|--------|--------|
+| 2026-10-11 | Add build step 10, org crew view. The demo becomes step 11. | Requirement 11 had no build step. Step 9 covers only the own profile of a crew member. |
