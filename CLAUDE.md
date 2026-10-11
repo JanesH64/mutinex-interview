@@ -11,7 +11,7 @@ Read `design/DESIGN.md` before you change the data model, the API or the CLI.
 - All tests: `uv run pytest`
 - Selected tests: `uv run pytest -k <filter>`
 - Build: none. The packages run from the workspace with `uv run`.
-- Run locally: `docker compose up -d && uv run alembic upgrade head && uv run uvicorn mc_api.main:app --reload`
+- Run locally: `docker compose up -d && uv run alembic upgrade head && uv run mc-seed && uv run uvicorn mc_api.main:app --reload`
 - CLI: `uv run mc --help`
 - New migration: `uv run alembic revision --autogenerate -m "<message>"`
 
