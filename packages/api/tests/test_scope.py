@@ -1,9 +1,10 @@
+from datetime import date
 from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 
-from mc_api.models import AppUser, Organization, Skill
+from mc_api.models import AppUser, Mission, MissionStatus, Organization, Skill
 from mc_api.scope import OrgScope
 from mc_shared import UserRole
 
@@ -37,3 +38,26 @@ def test_select_returns_only_own_org(session, make_user):
     session.flush()
     skills = session.scalars(scope.select(Skill)).all()
     assert skills == [skill_a]
+
+
+def test_get_for_update_hides_other_orgs(session, make_user):
+    a_lead = make_user(UserRole.LEAD)
+    b_lead = make_user(UserRole.LEAD)
+    missions = [
+        Mission(
+            org_id=lead.org_id,
+            title="M",
+            lead_id=lead.id,
+            status=MissionStatus.DRAFT,
+            start_date=date(2027, 1, 1),
+            end_date=date(2027, 1, 2),
+        )
+        for lead in (a_lead, b_lead)
+    ]
+    session.add_all(missions)
+    session.flush()
+    scope = OrgScope(session, a_lead.org_id)
+    assert scope.get(Mission, missions[0].id, for_update=True) is missions[0]
+    with pytest.raises(HTTPException) as exc:
+        scope.get(Mission, missions[1].id, for_update=True)
+    assert exc.value.status_code == 404

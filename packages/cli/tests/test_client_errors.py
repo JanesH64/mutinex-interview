@@ -58,3 +58,8 @@ def test_422_with_a_text_detail_shows_the_text():
     assert "Unknown skill: abc" in error_message(
         response(422, json={"detail": "Unknown skill: abc"})
     )
+
+
+def test_409_shows_the_detail():
+    detail = "Mission is APPROVED. Edits are allowed only in DRAFT."
+    assert detail in error_message(response(409, json={"detail": detail}))

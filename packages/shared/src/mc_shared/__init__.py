@@ -83,6 +83,13 @@ class SlotOut(BaseModel):
     min_level: int
 
 
+class MissionUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+
+
 class MissionOut(BaseModel):
     id: UUID
     title: str
