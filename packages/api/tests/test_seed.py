@@ -177,6 +177,41 @@ def test_second_org_has_all_kinds(conn):
         assert rows(conn, f"SELECT 1 FROM {table} WHERE org_id = {org} LIMIT 1"), table
 
 
+def test_kai_and_polar_ice_survey(conn):
+    kai = rows(
+        conn,
+        """SELECT u.role, u.display_name, o.name, s.name, c.level FROM app_user u
+        JOIN organization o ON o.id = u.org_id
+        JOIN crew_skill c ON c.user_id = u.id JOIN skill s ON s.id = c.skill_id
+        WHERE u.username = 'kai'""",
+    )
+    assert kai == [("CREW", "Kai Mensah", "Artemis Space Agency", "EVA", 3)]
+    assert not rows(
+        conn,
+        "SELECT 1 FROM assignment a JOIN app_user u ON u.id = a.user_id WHERE u.username = 'kai'",
+    )
+    mission = rows(
+        conn,
+        """SELECT m.status, u.username, m.start_date, m.end_date, m.approved_by, m.approved_at
+        FROM mission m JOIN app_user u ON u.id = m.lead_id WHERE m.title = 'Polar Ice Survey'""",
+    )
+    assert [tuple(map(str, r)) for r in mission] == [
+        ("DRAFT", "leo", "2027-01-11", "2027-01-24", "None", "None")
+    ]
+    slots = rows(
+        conn,
+        """SELECT r.position, s.name, r.min_level FROM mission_requirement r
+        JOIN mission m ON m.id = r.mission_id JOIN skill s ON s.id = r.skill_id
+        WHERE m.title = 'Polar Ice Survey' ORDER BY r.position""",
+    )
+    assert slots == [(1, "Piloting", 3), (2, "EVA", 3), (3, "Medicine", 2)]
+    assert not rows(
+        conn,
+        """SELECT 1 FROM assignment a JOIN mission m ON m.id = a.mission_id
+        WHERE m.title = 'Polar Ice Survey'""",
+    )
+
+
 def test_seed_without_schema_fails_clearly(conn, alembic_cfg):
     conn.rollback()
     conn.close()

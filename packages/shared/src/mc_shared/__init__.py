@@ -157,3 +157,21 @@ class UnavailabilityOut(BaseModel):
     start_date: date
     end_date: date
     reason: UnavailabilityReason
+
+
+class CrewSuggestion(BaseModel):
+    user_id: UUID
+    username: str
+    display_name: str
+    level: int
+    workload_days: int
+
+
+class SlotMatch(BaseModel):
+    slot: SlotOut
+    suggestion: CrewSuggestion | None
+
+
+class MatchPreview(BaseModel):
+    mission_id: UUID
+    slots: list[SlotMatch]

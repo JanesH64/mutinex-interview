@@ -5,7 +5,7 @@ from rich.console import Console
 from rich.table import Table
 
 from mc_cli.client import request
-from mc_shared import MissionOut, MissionSummary
+from mc_shared import MatchPreview, MissionOut, MissionSummary
 
 app = typer.Typer()
 console = Console(markup=False, highlight=False, emoji=False)
@@ -59,6 +59,27 @@ def show(mission_id: str) -> None:
     print_mission(
         MissionOut.model_validate(request("GET", f"/missions/{quote(mission_id, safe='')}").json())
     )
+
+
+@app.command()
+def match(mission_id: str) -> None:
+    """Show the closest-fit crew member for each slot of a DRAFT mission that you lead."""
+    path = f"/missions/{quote(mission_id, safe='')}/match"
+    preview = MatchPreview.model_validate(request("GET", path).json())
+    table = Table("Slot", "Skill", "Min level", "Crew", "Level", "Workload days")
+    for m in preview.slots:
+        s, c = m.slot, m.suggestion
+        table.add_row(
+            str(s.position),
+            s.skill_name,
+            str(s.min_level),
+            c.username if c else "No match",
+            str(c.level) if c else "",
+            str(c.workload_days) if c else "",
+        )
+    console.print(table)
+    filled = sum(m.suggestion is not None for m in preview.slots)
+    console.print(f"{filled} of {len(preview.slots)} slots filled")
 
 
 @app.command()
