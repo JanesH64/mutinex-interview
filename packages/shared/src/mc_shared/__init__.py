@@ -116,3 +116,9 @@ class MissionSummary(BaseModel):
     end_date: date
     lead_username: str
     requires_additional_director: bool
+
+
+class ProfileOut(BaseModel):
+    username: str
+    display_name: str
+    org_name: str
