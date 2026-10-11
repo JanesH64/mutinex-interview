@@ -1,0 +1,15 @@
+[project]
+name = "mc-cli"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["mc-shared", "typer", "httpx", "rich"]
+
+[project.scripts]
+mc = "mc_cli.main:app"
+
+[tool.uv.sources]
+mc-shared = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.8,<0.13"]
+build-backend = "uv_build"
