@@ -4,7 +4,7 @@ import os
 from fastapi import FastAPI
 
 from mc_api.errors import Forbidden, forbidden_handler
-from mc_api.routers import auth, health, missions, skills, users
+from mc_api.routers import auth, health, missions, profile, skills, users
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -18,3 +18,4 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(skills.router)
 app.include_router(missions.router)
+app.include_router(profile.router)
