@@ -17,12 +17,12 @@ run() {
 fast() {
   run format 'uv run ruff format --check -q .'
   run lint 'uv run ruff check -q .'
-  run tests 'uv run pytest -q'
+  run tests 'uv run pytest -q -m "not e2e"'
 }
 
 # Build, all other tests and e2e. Give each e2e step its own call: start, smoke, browser tests, stop.
 full() {
-  :  # No build or e2e step yet.
+  run e2e 'uv run pytest -q -m e2e'
 }
 
 case "${1:-}" in

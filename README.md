@@ -21,8 +21,12 @@ uv run uvicorn mc_api.main:app --reload    # API on http://localhost:8000
 In a second terminal:
 ```sh
 uv run mc health                           # API ok, database ok
+uv run mc login --user diana               # store a token
+uv run mc whoami                           # show the user, the role and the org
 uv run mc --help
 ```
+
+The token is in `~/.config/mc/token`. `MC_CONFIG_DIR` overrides the folder. `mc logout` deletes the token.
 
 The API docs are at http://localhost:8000/docs.
 
@@ -67,7 +71,9 @@ The defaults match `docker-compose.yml`, so the run steps need no configuration.
 | Variable | Default | Used by |
 |----------|---------|---------|
 | `DATABASE_URL` | `postgresql+psycopg://mc:mc@localhost:5432/mc` | API, Alembic |
+| `JWT_SECRET` | `dev-only-secret-change-me-0123456789` | API |
 | `MC_API_URL` | `http://localhost:8000` | CLI |
+| `MC_CONFIG_DIR` | `~/.config/mc` | CLI |
 
 ## Repository layout
 | Path | Content |

@@ -51,3 +51,35 @@ def session():
         with Session(conn, join_transaction_mode="create_savepoint") as s:
             yield s
         outer.rollback()
+
+
+@pytest.fixture
+def client(session):
+    from fastapi.testclient import TestClient
+
+    from mc_api.db import get_session
+    from mc_api.main import app
+
+    app.dependency_overrides[get_session] = lambda: session
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def make_user(session):
+    from uuid import uuid4
+
+    from mc_api.models import AppUser, Organization
+
+    def make(role, org=None):
+        if org is None:
+            org = Organization(name=f"org-{uuid4()}")
+            session.add(org)
+            session.flush()
+        name = f"{role.lower()}-{uuid4()}"
+        user = AppUser(org_id=org.id, username=name, display_name=name.title(), role=role)
+        session.add(user)
+        session.flush()
+        return user
+
+    return make
