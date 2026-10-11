@@ -21,6 +21,7 @@ from mc_api.models import (
 from mc_api.scope import OrgScope
 from mc_shared import (
     CrewSuggestion,
+    InviteCreate,
     MatchPreview,
     MissionCreate,
     MissionOut,
@@ -52,6 +53,9 @@ router = APIRouter(
 Scope = Annotated[OrgScope, Depends(get_scope)]
 
 
+ACTIVE = (AssignmentStatus.INVITED, AssignmentStatus.ACCEPTED)
+
+
 def mission_out(scope: OrgScope, mission: Mission) -> MissionOut:
     lead = scope.get(AppUser, mission.lead_id)
     rows = scope.session.execute(
@@ -60,6 +64,16 @@ def mission_out(scope: OrgScope, mission: Mission) -> MissionOut:
         .join(
             Skill,
             (Skill.org_id == MissionRequirement.org_id) & (Skill.id == MissionRequirement.skill_id),
+        )
+        .add_columns(AppUser.username, Assignment.status)
+        .outerjoin(
+            Assignment,
+            (Assignment.org_id == MissionRequirement.org_id)
+            & (Assignment.requirement_id == MissionRequirement.id)
+            & Assignment.status.in_(ACTIVE),
+        )
+        .outerjoin(
+            AppUser, (AppUser.org_id == Assignment.org_id) & (AppUser.id == Assignment.user_id)
         )
         .where(
             MissionRequirement.mission_id == mission.id,
@@ -88,8 +102,10 @@ def mission_out(scope: OrgScope, mission: Mission) -> MissionOut:
                 skill_id=r.skill_id,
                 skill_name=name,
                 min_level=r.min_level,
+                crew_username=crew,
+                assignment_status=status,
             )
-            for r, name in rows
+            for r, name, crew, status in rows
         ],
     )
 
@@ -310,6 +326,67 @@ def remove_slot(
     slot.archived_at = datetime.now(UTC)
     scope.session.commit()
     logger.info("slot %s removed from mission %s by user %s", position, mission.id, user.id)
+    return mission_out(scope, mission)
+
+
+@router.post("/{mission_id}/assignments", status_code=201)
+def invite(
+    mission_id: UUID,
+    body: InviteCreate,
+    scope: Scope,
+    user: Annotated[AppUser, Depends(get_current_user)],
+) -> MissionOut:
+    mission = scope.get(Mission, mission_id, for_update=True)
+    if mission.lead_id != user.id:
+        raise Forbidden(user.role, "Directors and leads invite crew only to their own missions")
+
+    def reject(status: int, detail: str) -> HTTPException:
+        logger.info("invite to mission %s rejected: %s", mission.id, detail)
+        return HTTPException(status, detail)
+
+    if mission.status != MissionStatus.APPROVED:
+        raise reject(409, f"Mission is {mission.status}. Invites are allowed only in APPROVED.")
+    slot = scope.session.scalar(
+        scope.select(MissionRequirement).where(
+            MissionRequirement.mission_id == mission.id,
+            MissionRequirement.position == body.position,
+            MissionRequirement.archived_at.is_(None),
+        )
+    )
+    if slot is None:
+        raise reject(422, f"Unknown slot: {body.position}")
+    crew = scope.session.scalar(
+        scope.select(AppUser).where(AppUser.username == body.username).with_for_update()
+    )
+    if crew is None:
+        raise reject(422, f"Unknown crew member: {body.username}")
+    if crew.role != UserRole.CREW:
+        raise reject(
+            422,
+            f"{crew.username} is not a crew member. Only crew members can be assigned to missions.",
+        )
+    active = scope.select(Assignment).where(
+        Assignment.mission_id == mission.id, Assignment.status.in_(ACTIVE)
+    )
+    if scope.session.scalar(active.where(Assignment.requirement_id == slot.id)):
+        raise reject(409, f"Slot {slot.position} already has an INVITED or ACCEPTED assignment.")
+    if scope.session.scalar(active.where(Assignment.user_id == crew.id)):
+        raise reject(
+            409, f"{crew.username} already has an INVITED or ACCEPTED assignment on this mission."
+        )
+    scope.session.add(
+        Assignment(
+            org_id=scope.org_id,
+            mission_id=mission.id,
+            requirement_id=slot.id,
+            user_id=crew.id,
+            status=AssignmentStatus.INVITED,
+        )
+    )
+    scope.session.commit()
+    logger.info(
+        "user %s invited %s to slot %s of mission %s", user.id, crew.id, slot.position, mission.id
+    )
     return mission_out(scope, mission)
 
 

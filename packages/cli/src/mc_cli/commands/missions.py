@@ -23,9 +23,15 @@ def print_mission(m: MissionOut) -> None:
     if m.approved_by_username and m.approved_at:
         when = m.approved_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
         console.print(f"Approved by {m.approved_by_username} at {when} UTC")
-    table = Table("Slot", "Skill", "Min level")
+    table = Table("Slot", "Skill", "Min level", "Crew", "Status")
     for slot in m.slots:
-        table.add_row(str(slot.position), slot.skill_name, str(slot.min_level))
+        table.add_row(
+            str(slot.position),
+            slot.skill_name,
+            str(slot.min_level),
+            slot.crew_username or "",
+            slot.assignment_status or "",
+        )
     console.print(table)
 
 
@@ -113,6 +119,18 @@ def withdraw(mission_id: str) -> None:
     """Withdraw a mission that you lead from APPROVAL_REQUIRED to DRAFT."""
     path = f"/missions/{quote(mission_id, safe='')}/withdraw"
     print_mission(MissionOut.model_validate(request("POST", path).json()))
+
+
+@app.command()
+def invite(
+    mission_id: str,
+    slot: int = typer.Option(..., "--slot", help="Slot number."),
+    crew: str = typer.Option(..., "--crew", help="Username of the crew member."),
+) -> None:
+    """Invite a crew member to an open slot of an APPROVED mission that you lead."""
+    path = f"/missions/{quote(mission_id, safe='')}/assignments"
+    body = {"position": slot, "username": crew}
+    print_mission(MissionOut.model_validate(request("POST", path, json=body).json()))
 
 
 @app.command()

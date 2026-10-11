@@ -19,14 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from mc_api.db import Base
-from mc_shared import MissionStatus, UnavailabilityReason, UserRole
-
-
-class AssignmentStatus(enum.StrEnum):
-    INVITED = "INVITED"
-    ACCEPTED = "ACCEPTED"
-    DECLINED = "DECLINED"
-    CANCELLED = "CANCELLED"
+from mc_shared import AssignmentStatus, MissionStatus, UnavailabilityReason, UserRole
 
 
 class Timestamps:
