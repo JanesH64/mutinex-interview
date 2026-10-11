@@ -69,7 +69,7 @@ Each step ends with its happy path test and cross org check. Each step is one or
 5. Matcher preview: filters, ranking, slot assignment. mc missions match
 6. Approval: submit, withdraw, approve, reject. No self approval, additional director flag, preview in approval view
 7. Staffing: invite, mc assignments list / accept / decline, double booking check, decliner exclusion on rematch
-8. Remaining transitions: back to draft, start (guard), complete, cancel. Assignment cancellation
+8. Remaining transitions: withdraw from APPROVED back to draft, start (guard), complete, cancel. Assignment cancellation
 9. Crew profile: mc profile show, skills, availability
 10. Scripted end-to-end CLI demo + test results in README
 
@@ -114,7 +114,7 @@ Each step ends with its happy path test and cross org check. Each step is one or
 3. Leads cannot approve their own missions -> One role per user with hierarchy Director > Lead, so a director can also lead missions. The mission lead can never approve their own mission. A director who is also leading a mission needs a second director to get approval. On mission creation the API and CLI flag that this mission requires an additional director for approval.
 4. Who can be assinged to a mission: Only crew members can be assigned to missions. A lead is never a crew member and a director is never a crew member. The Director > Lead hierarchy does not include Crew.
 5. Directors approve missions -> A mission to approve consists of requirements, timeline and date. Lead can preview the matcher in draft to check the mission can be staffed before submit. The director sees the same matcher preview in the approval view. Invites happen only after approval, so scarce skills are not reserved for unfunded missions. No separate steps for now
-6. Changing after approval -> Missions can only be edited in draft. Before changing mission details after a director approved lead needs to put the mission back to draft status. All INVITED / ACCEPTED assignments are then CANCELLED. Staffing changes (e.g. replacing a declined crew member) are not a change and need no new approval.
+6. Changing after approval -> Missions can only be edited in draft. Before changing mission details after a director approved lead needs to withdraw the mission back to draft status. All INVITED / ACCEPTED assignments are then CANCELLED. Staffing changes (e.g. replacing a declined crew member) are not a change and need no new approval.
 7. Availability tracking -> Instead of managing available periods it is more pragmatic to manage unavailable timeslots: holiday leave, sick leave, internal meetings, etc. Dates only. A crew member is blocked by unavailability, invited and accepted assignments.
 8. Account for workload in matching -> Initially setting to booked mission days (invited + accepted) in time window (e.g. 90d) before and after the mission. Rest between missions deferred to P2
 9. Crew has "limited" visibility -> Fixing to profile, own mission assignments and mission details. Enforced via RBAC in the API
@@ -127,7 +127,8 @@ Each step ends with its happy path test and cross org check. Each step is one or
 
 ## RBAC role resolution
 - Directors 
-    - Can do everything a lead can
+    - Can do everything a lead can, on their own missions only
+    - Cannot act on missions of other leads, except approve / reject
     - Can approve / reject missions (not their own)
     - Can view whole org data
     - Can edit org settings (skills)
@@ -150,7 +151,7 @@ Each step ends with its happy path test and cross org check. Each step is one or
     - Every referenced id (e.g. skill_id, crew_id) is looked up with org filter. Cross org returns no data
 - Composite foreign keys as second layer for writes so DB rejects cross org links even if the data-access layer has a bug. They do not protect reads. Reads rely on the data-access layer only
     - Every tenant table has org_id, parent tables have UNIQUE(org_id, id)
-    - Child tables reference (org_id, x_id) -> parent(org_id, id): assignment -> mission / user, mission_requirement -> mission / skill, crew_skill -> user / skill, unavailability -> user, mission.lead_id -> user
+    - Child tables reference (org_id, x_id) -> parent(org_id, id): assignment -> mission / user, assignment (org_id, mission_id, requirement_id) -> mission_requirement (org_id, mission_id, id) so the slot belongs to the same mission, mission_requirement -> mission / skill, crew_skill -> user / skill, unavailability -> user, mission.lead_id -> user
     - Only crew can be assigned is not covered by FK -> checked in service layer
 - Will ensure via cross org access checks in the happy path tests
 - Postgres RLS would be the second layer for reads - Deferred to P2
@@ -162,14 +163,15 @@ UUID primary keys stay internal. Each resource also has a human readable key for
 - Missions: per org code `MSN-<n>` with UNIQUE(org_id, number). Next number via `UPDATE org SET mission_seq = mission_seq + 1 ... RETURNING` in the same transaction. The row lock serializes concurrent creates, so no collisions
 - Slots: position in the mission (1, 2, 3) with UNIQUE(mission_id, position)
 - Assignments: referenced by mission code. Partial unique index: one INVITED / ACCEPTED assignment per (mission_id, user_id)
+- Slots: partial unique index on assignment (requirement_id) WHERE status IN (INVITED, ACCEPTED): one active assignment per slot
 
 ## Initial mission lifecycle
-1. DRAFT: Mission lead creates, edits mission. Can preview the matcher. If the lead is a director, the mission is flagged as requiring an additional director for approval
+1. DRAFT: Mission lead creates, edits mission. Can preview the matcher. If the lead is a director, the mission is flagged as requiring an additional director for approval. The flag is derived from the lead's current role and never stored
 2. APPROVAL_REQUIRED:  Mission details are finalized. Mission is sent to Director for approval. Director sees the matcher preview. Awaiting response
     - Director rejects -> back to DRAFT (no comment, P2)
     - Lead withdraws -> back to DRAFT
 3. APPROVED: Mission is approved and mission lead performs staffing. Inviting the crew. Awaiting their response. 
-    - Lead puts mission back to DRAFT to change details -> all INVITED / ACCEPTED assignments become CANCELLED
+    - Lead withdraws mission back to DRAFT to change details -> all INVITED / ACCEPTED assignments become CANCELLED
 4. ACTIVE: Mission lead started the mission. Guard: every slot has an ACCEPTED assignment
 5. COMPLETED: Mission lead completed the mission
 6. CANCELLED: Cancelled by mission lead (no reason, P2). Changing to this state from any state except COMPLETED. All INVITED / ACCEPTED assignments become CANCELLED.
@@ -180,7 +182,7 @@ UUID primary keys stay internal. Each resource also has a human readable key for
 2. ACCEPTED: Crew member accepted
 3. DECLINED: Crew member declined. Slot is open again, lead reruns matching. The matcher never suggests this member for this mission again
 4. CANCELLED: Mission went back to DRAFT or was cancelled. Frees the crew member's availability
-- Double booking check when inviting and accepting - DB constraint?
+- Double booking check when inviting and accepting: the service locks the crew member's user row (`SELECT ... FOR UPDATE`) and checks date overlap with INVITED / ACCEPTED assignments in the same transaction. No DB constraint, because mission dates are not on the assignment
 
 ## Staffing matching v1
 - Each slot seeks to be filled by one crew member (slot = skill + min level)
@@ -237,5 +239,4 @@ API + CLI. One language (Python) for API and CLI keeps the stack small
 - Additonal step required to indicate invited members? INVIATION_PENDING / STAFFING?
 - Crew adds unavailability that overlaps an INVITED / ACCEPTED assignment: reject, warn or auto-decline?
 - Crew lowers a skill level below a slot minimum while INVITED / ACCEPTED: keep, warn or flag to lead?
-- Double booking prevention for crew members, dive deep into DB constraints
 - API paths: short references (MSN-42) or UUIDs? Codes simplify the CLI, UUIDs keep paths stable if a code ever changes
