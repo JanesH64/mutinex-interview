@@ -3,7 +3,7 @@ import typer
 from rich.console import Console
 
 from mc_cli.client import API_URL
-from mc_cli.commands import auth, missions, profile, skills
+from mc_cli.commands import assignments, auth, missions, profile, skills
 from mc_shared import Health
 
 app = typer.Typer(no_args_is_help=True)
@@ -34,3 +34,4 @@ app.command()(auth.logout)
 app.add_typer(skills.app, name="skills")
 app.add_typer(missions.app, name="missions")
 app.add_typer(profile.app, name="profile")
+app.add_typer(assignments.app, name="assignments")

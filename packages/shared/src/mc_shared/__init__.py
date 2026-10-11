@@ -191,3 +191,18 @@ class SlotMatch(BaseModel):
 class MatchPreview(BaseModel):
     mission_id: UUID
     slots: list[SlotMatch]
+
+
+class AssignmentOut(BaseModel):
+    id: UUID
+    mission_id: UUID
+    mission_title: str
+    mission_status: MissionStatus
+    start_date: date
+    end_date: date
+    lead_username: str
+    position: int
+    skill_name: str
+    min_level: int
+    status: AssignmentStatus
+    responded_at: datetime | None
