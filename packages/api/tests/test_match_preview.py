@@ -251,3 +251,39 @@ def test_busy_crew_is_skipped_and_the_free_one_takes_slot_one(client, make_user,
     assert first["suggestion"]["user_id"] == str(y.id)
     assert second["suggestion"] is None
     assert str(x.id) not in response.text
+
+
+def test_workload_days_counts_active_assignments_in_the_window_ac15(
+    client, make_user, session, auth
+):
+    lead, mission, eva, crew = busy_setup(session, make_user)
+    for status, start, end in [
+        (AssignmentStatus.ACCEPTED, date(2026, 11, 25), date(2026, 12, 5)),
+        (AssignmentStatus.INVITED, date(2027, 6, 1), date(2027, 6, 20)),
+        (AssignmentStatus.ACCEPTED, date(2026, 11, 20), date(2026, 11, 30)),
+        (AssignmentStatus.DECLINED, date(2027, 4, 1), date(2027, 4, 5)),
+    ]:
+        other_mission_assignment(session, lead, eva, crew, start, end, status)
+    result = suggested(client, auth, lead, mission)
+    assert result["user_id"] == str(crew.id)
+    assert result["workload_days"] == 13
+
+
+def test_holders_count_all_crew_and_no_leads_ac13(client, make_user, session, auth):
+    lead, mission, eva, eli = busy_setup(session, make_user)
+    org = session.get(Organization, lead.org_id)
+    robotics = make_skill(session, lead.org_id, "Robotics")
+    geology = make_skill(session, lead.org_id, "Geology")
+    give(session, eli, robotics, 1)
+    for _ in range(2):  # busy Robotics holders still count
+        busy = make_user(UserRole.CREW, org)
+        give(session, busy, robotics, 1)
+        leave(session, busy, date(2027, 3, 5), date(2027, 3, 6))
+    zed = make_user(UserRole.CREW, org)
+    eli.username, zed.username = "zz-eli", "aa-zed"  # a wrong count then picks zed by name
+    give(session, zed, eva, 3)
+    give(session, zed, geology, 1)
+    give(session, make_user(UserRole.CREW, org), geology, 1)
+    for _ in range(2):  # LEADs do not count
+        give(session, make_user(UserRole.LEAD, org), geology, 1)
+    assert suggested(client, auth, lead, mission)["user_id"] == str(eli.id)

@@ -1,4 +1,6 @@
+import random
 import time
+from datetime import date
 from uuid import UUID, uuid4
 
 from mc_shared import SlotOut
@@ -7,7 +9,14 @@ EVA = UUID(int=1)
 ROBOTICS = UUID(int=2)
 PILOTING = UUID(int=3)
 GEOLOGY = UUID(int=4)
-NAMES = {EVA: "EVA", ROBOTICS: "Robotics", PILOTING: "Piloting", GEOLOGY: "Geology"}
+WELDING = UUID(int=5)
+NAMES = {
+    EVA: "EVA",
+    ROBOTICS: "Robotics",
+    PILOTING: "Piloting",
+    GEOLOGY: "Geology",
+    WELDING: "Welding",
+}
 
 
 def slot(skill, level, position=1):
@@ -100,5 +109,99 @@ def test_assign_scales_to_20_slots_and_200_candidates():
     ]
     start = time.monotonic()
     got = run(slots, candidates)
+    assert time.monotonic() - start < 2
+    assert len({c.user_id for c in got}) == 20
+
+
+def run_with(slots, candidates, holders):
+    from mc_api.matcher import assign
+
+    return assign(slots, candidates, holders)
+
+
+def test_scarcity_no_other_skill_beats_a_rare_other_skill_ac13():
+    got = run_with(
+        [slot(EVA, 3)], [crew("eli", {EVA: 3, GEOLOGY: 3}), crew("dev", {EVA: 3})], {GEOLOGY: 3}
+    )
+    assert names(got) == ["dev"]
+
+
+def test_scarcity_lower_max_wins_ac13_eli_over_cara():
+    got = run_with(
+        [slot(EVA, 3)],
+        [crew("cara", {EVA: 3, ROBOTICS: 3}), crew("eli", {EVA: 3, GEOLOGY: 3})],
+        {GEOLOGY: 3, ROBOTICS: 2},
+    )
+    assert names(got) == ["eli"]
+
+
+def test_scarcity_wins_over_workload_ac13():
+    got = run_with(
+        [slot(EVA, 3)],
+        [crew("dev", {EVA: 3}, workload_days=30), crew("eli", {EVA: 3, GEOLOGY: 3})],
+        {GEOLOGY: 3},
+    )
+    assert names(got) == ["dev"]
+
+
+def test_scarcity_only_the_max_counts_ac13():
+    got = run_with(
+        [slot(EVA, 3)],
+        [crew("bob", {EVA: 3, ROBOTICS: 1}), crew("abe", {EVA: 3, GEOLOGY: 1, PILOTING: 1})],
+        {GEOLOGY: 3, PILOTING: 3, ROBOTICS: 2},
+    )
+    assert names(got) == ["abe"]
+
+
+def test_scarcity_ignores_the_slot_skill_ac13():
+    got = run_with(
+        [slot(WELDING, 1)],
+        [crew("bob", {WELDING: 1, GEOLOGY: 2}), crew("abe", {WELDING: 1}, workload_days=10)],
+        {WELDING: 2, GEOLOGY: 3},
+    )
+    assert names(got) == ["abe"]
+
+
+def test_gap_wins_over_scarcity_and_workload_ac12():
+    got = run_with(
+        [slot(PILOTING, 3)],
+        [crew("ivan", {PILOTING: 4}), crew("ben", {PILOTING: 3, ROBOTICS: 1}, workload_days=60)],
+        {ROBOTICS: 1},
+    )
+    assert names(got) == ["ben"]
+
+
+def test_lower_workload_wins_at_equal_gap_and_scarcity_ac14():
+    got = run([slot(EVA, 3)], [crew("dev", {EVA: 3}, workload_days=12), crew("kai", {EVA: 3})])
+    assert names(got) == ["kai"]
+
+
+def test_workload_days_clips_to_the_window_ac15():
+    from mc_api.matcher import workload_days
+
+    booked = [
+        (date(2026, 11, 25), date(2026, 12, 5)),
+        (date(2027, 6, 1), date(2027, 6, 20)),
+        (date(2026, 11, 20), date(2026, 11, 30)),
+    ]
+    assert workload_days(date(2027, 3, 1), date(2027, 3, 10), booked) == 13
+    assert workload_days(date(2027, 3, 1), date(2027, 3, 10), []) == 0
+
+
+def test_assign_scales_with_random_holders():
+    rng = random.Random(7)
+    slots = [slot(EVA, 1, p) for p in range(1, 21)]
+    skills = [ROBOTICS, PILOTING, GEOLOGY]
+    candidates = [
+        crew(
+            f"u{i:03}",
+            {EVA: i % 5 + 1, **{k: 1 for k in skills if rng.random() < 0.5}},
+            workload_days=(i * 7) % 301,
+        )
+        for i in range(200)
+    ]
+    holders = {k: rng.randint(1, 200) for k in [EVA, *skills]}
+    start = time.monotonic()
+    got = run_with(slots, candidates, holders)
     assert time.monotonic() - start < 2
     assert len({c.user_id for c in got}) == 20
