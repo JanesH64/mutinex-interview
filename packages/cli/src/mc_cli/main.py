@@ -3,7 +3,7 @@ import typer
 from rich.console import Console
 
 from mc_cli.client import API_URL
-from mc_cli.commands import auth
+from mc_cli.commands import auth, skills
 from mc_shared import Health
 
 app = typer.Typer(no_args_is_help=True)
@@ -31,3 +31,4 @@ def health() -> None:
 app.command()(auth.login)
 app.command()(auth.whoami)
 app.command()(auth.logout)
+app.add_typer(skills.app, name="skills")

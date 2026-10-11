@@ -43,3 +43,9 @@ class UserOut(BaseModel):
 class ForbiddenError(BaseModel):
     role: UserRole
     rule: str
+
+
+class SkillOut(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
