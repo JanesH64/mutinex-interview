@@ -5,6 +5,7 @@ import jwt
 import pytest
 
 from mc_api.auth import JWT_SECRET, create_token
+from mc_api.models import Organization
 from mc_shared import UserRole
 
 
@@ -32,6 +33,7 @@ def test_login_unknown_user_gives_401(client):
 
 def test_me_returns_user_and_org(client, make_user, session):
     lead = make_user(UserRole.LEAD)
+    make_user(UserRole.CREW)  # another org
     response = client.get("/me", headers=bearer(create_token(lead.id)))
     assert response.status_code == 200
     body = response.json()
@@ -40,12 +42,13 @@ def test_me_returns_user_and_org(client, make_user, session):
     assert body["display_name"] == lead.display_name
     assert body["role"] == "LEAD"
     assert body["org_id"] == str(lead.org_id)
-    assert body["org_name"].startswith("org-")
+    assert body["org_name"] == session.get(Organization, lead.org_id).name
 
 
 def test_me_loads_the_role_on_each_request(client, make_user, session):
     user = make_user(UserRole.LEAD)
     token = create_token(user.id)
+    assert client.get("/me", headers=bearer(token)).json()["role"] == "LEAD"
     user.role = UserRole.DIRECTOR
     session.flush()
     response = client.get("/me", headers=bearer(token))

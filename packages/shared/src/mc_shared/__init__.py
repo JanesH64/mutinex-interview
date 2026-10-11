@@ -31,3 +31,15 @@ class Me(BaseModel):
     role: UserRole
     org_id: UUID
     org_name: str
+
+
+class UserOut(BaseModel):
+    id: UUID
+    username: str
+    display_name: str
+    role: UserRole
+
+
+class ForbiddenError(BaseModel):
+    role: UserRole
+    rule: str
