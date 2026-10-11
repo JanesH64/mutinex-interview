@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -14,6 +15,7 @@ from mc_shared import (
     MissionStatus,
     MissionSummary,
     MissionUpdate,
+    SlotCreate,
     SlotOut,
     UserRole,
 )
@@ -151,4 +153,65 @@ def update_mission(
         setattr(mission, field, value)
     scope.session.commit()
     logger.info("mission %s edited by user %s: %s", mission.id, user.id, sorted(changes))
+    return mission_out(scope, mission)
+
+
+@router.post("/{mission_id}/slots", status_code=201)
+def add_slot(
+    mission_id: UUID,
+    body: SlotCreate,
+    scope: Scope,
+    user: Annotated[AppUser, Depends(get_current_user)],
+) -> MissionOut:
+    mission = editable_mission(scope, user, mission_id)
+    if scope.session.scalar(scope.select(Skill).where(Skill.id == body.skill_id)) is None:
+        logger.info("slot add to mission %s rejected: unknown skill", mission.id)
+        raise HTTPException(422, f"Unknown skill: {body.skill_id}")
+    used = set(
+        scope.session.scalars(
+            scope.select(MissionRequirement)
+            .where(
+                MissionRequirement.mission_id == mission.id,
+                MissionRequirement.archived_at.is_(None),
+            )
+            .with_only_columns(MissionRequirement.position)
+        )
+    )
+    # The mission row lock serializes this choice.
+    position = next(p for p in range(1, len(used) + 2) if p not in used)
+    scope.session.add(
+        MissionRequirement(
+            org_id=scope.org_id,
+            mission_id=mission.id,
+            position=position,
+            skill_id=body.skill_id,
+            min_level=body.min_level,
+        )
+    )
+    scope.session.commit()
+    logger.info("slot %s added to mission %s by user %s", position, mission.id, user.id)
+    return mission_out(scope, mission)
+
+
+@router.delete("/{mission_id}/slots/{position}")
+def remove_slot(
+    mission_id: UUID,
+    position: int,
+    scope: Scope,
+    user: Annotated[AppUser, Depends(get_current_user)],
+) -> MissionOut:
+    mission = editable_mission(scope, user, mission_id)
+    slot = scope.session.scalar(
+        scope.select(MissionRequirement).where(
+            MissionRequirement.mission_id == mission.id,
+            MissionRequirement.position == position,
+            MissionRequirement.archived_at.is_(None),
+        )
+    )
+    if slot is None:
+        logger.info("slot %s removal from mission %s rejected: not found", position, mission.id)
+        raise HTTPException(404, "Not found")
+    slot.archived_at = datetime.now(UTC)
+    scope.session.commit()
+    logger.info("slot %s removed from mission %s by user %s", position, mission.id, user.id)
     return mission_out(scope, mission)

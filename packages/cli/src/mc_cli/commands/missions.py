@@ -74,3 +74,26 @@ def edit(
     body = {k: v for k, v in given.items() if v is not None}
     path = f"/missions/{quote(mission_id, safe='')}"
     print_mission(MissionOut.model_validate(request("PATCH", path, json=body).json()))
+
+
+slots = typer.Typer()
+app.add_typer(slots, name="slots", help="Add and remove slots of a DRAFT mission.")
+
+
+@slots.command("add")
+def add_slot(
+    mission_id: str,
+    skill: str = typer.Option(..., "--skill", help="Skill ID."),
+    level: int = typer.Option(..., "--level", help="Minimum level, 1 to 5."),
+) -> None:
+    """Add a slot to a DRAFT mission that you lead."""
+    path = f"/missions/{quote(mission_id, safe='')}/slots"
+    body = {"skill_id": skill, "min_level": level}
+    print_mission(MissionOut.model_validate(request("POST", path, json=body).json()))
+
+
+@slots.command("remove")
+def remove_slot(mission_id: str, position: str) -> None:
+    """Remove the slot at a position from a DRAFT mission that you lead."""
+    path = f"/missions/{quote(mission_id, safe='')}/slots/{quote(position, safe='')}"
+    print_mission(MissionOut.model_validate(request("DELETE", path).json()))
