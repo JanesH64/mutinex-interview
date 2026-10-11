@@ -5,7 +5,7 @@ from mc_cli.client import err, fail, request, send
 from mc_cli.token_store import delete_token, save_token
 from mc_shared import Me, Token
 
-console = Console()
+console = Console(markup=False, highlight=False, emoji=False)
 
 
 def show(me: Me) -> str:
@@ -22,12 +22,12 @@ def login(user: str = typer.Option(..., "--user", help="Username to log in as.")
         fail(response)
     save_token(Token.model_validate(response.json()).access_token)
     me = Me.model_validate(request("GET", "/me").json())
-    console.print(f"Logged in as {show(me)}", markup=False)
+    console.print(f"Logged in as {show(me)}")
 
 
 def whoami() -> None:
     """Show the logged-in user."""
-    console.print(show(Me.model_validate(request("GET", "/me").json())), markup=False)
+    console.print(show(Me.model_validate(request("GET", "/me").json())))
 
 
 def logout() -> None:
