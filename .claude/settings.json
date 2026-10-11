@@ -1,0 +1,57 @@
+{
+  "env": {
+    "VERIFY_FAST": "scripts/check.sh fast",
+    "VERIFY_FULL": "scripts/check.sh full"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(.claude/hooks/verify.sh fast)",
+      "Bash(.claude/hooks/verify.sh full)",
+      "Bash(.claude/hooks/test-lock.sh status)"
+    ],
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(!**/.env.test)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f*)",
+      "Bash(git push *+*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/hook.sh stop"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/hook.sh pre-tool"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/hook.sh post-tool"
+          }
+        ]
+      }
+    ]
+  }
+}
