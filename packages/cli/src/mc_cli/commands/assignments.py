@@ -1,4 +1,5 @@
 from datetime import UTC
+from urllib.parse import quote
 
 import typer
 from rich.console import Console
@@ -37,3 +38,22 @@ def list_assignments() -> None:
     if not console.is_terminal:
         console.width = max(console.width, 120)
     console.print(table)
+
+
+def respond(action: str, mission_id: str) -> None:
+    a = AssignmentOut.model_validate(
+        request("POST", f"/assignments/{quote(mission_id, safe='')}/{action}").json()
+    )
+    console.print(f"{a.status}: {a.mission_title}, slot {a.position} {a.skill_name}")
+
+
+@app.command()
+def accept(mission_id: str) -> None:
+    """Accept your invite to a mission."""
+    respond("accept", mission_id)
+
+
+@app.command()
+def decline(mission_id: str) -> None:
+    """Decline your invite to a mission."""
+    respond("decline", mission_id)
