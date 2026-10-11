@@ -301,7 +301,26 @@ stateDiagram-v2
 | DECLINED | The crew member declined. The slot is open again and the lead runs the matcher again. The matcher never suggests this crew member for this mission again. |
 | CANCELLED | The mission went back to DRAFT or the lead cancelled it. The crew member is available again. |
 
+The API checks the invite in this order. The first failed check gives the error.
+
+1. The mission exists in the org of the lead (404).
+2. The lead owns the mission (403).
+3. The mission is APPROVED (409).
+4. The slot exists (422).
+5. The crew member exists (422).
+6. The user has the CREW role (422).
+7. The slot has no INVITED or ACCEPTED assignment (409).
+8. The crew member has no INVITED or ACCEPTED assignment on this mission (409).
+9. The crew member did not decline this mission (409).
+10. The crew member has the skill at the minimum level (409).
+11. The crew member has no leave that overlaps the mission (409).
+12. The crew member has no double booking (409).
+
+When more than one leave entry or mission overlaps, the error names the one with the earliest start date.
+
 The API checks for double booking at invite and at accept. The service locks the user row of the crew member (`SELECT ... FOR UPDATE`). In the same transaction, it checks for date overlap with INVITED and ACCEPTED assignments. A DB constraint is not possible, because the assignment does not hold the mission dates.
+
+Accept and decline check in this order: the mission exists in the org (404), the crew member has an assignment on the mission (404), the assignment is INVITED (409). Accept then checks double booking with the other missions (409). Accept does not check the skill or the leave again.
 
 ### Profile conflicts
 The API rejects a crew profile change that conflicts with an INVITED or ACCEPTED assignment. The error response names the conflict.

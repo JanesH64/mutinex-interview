@@ -117,3 +117,88 @@ def test_invite_waits_for_the_crew_lock_and_sees_committed_data():
             for table in CLEANUP:
                 conn.execute(text(f"DELETE FROM {table} WHERE org_id = :o"), {"o": org_id})
             conn.execute(text("DELETE FROM organization WHERE id = :o"), {"o": org_id})
+
+
+def test_accept_waits_for_the_crew_lock_and_sees_committed_data():
+    from fastapi.testclient import TestClient
+
+    from mc_api.main import app
+
+    org = Organization(name=f"org-{uuid4()}")
+    with Session(engine) as s:
+        s.add(org)
+        s.flush()
+        lead = AppUser(org_id=org.id, username=f"lead-{uuid4()}", display_name="X", role="LEAD")
+        crew = AppUser(org_id=org.id, username=f"crew-{uuid4()}", display_name="X", role="CREW")
+        s.add_all([lead, crew])
+        skill = Skill(org_id=org.id, name="EVA")
+        s.add(skill)
+        s.flush()
+        slots, mission_ids = [], []
+        for title, start in (("First", date(2027, 3, 1)), ("Second", date(2027, 3, 5))):
+            m = Mission(
+                org_id=org.id,
+                title=title,
+                lead_id=lead.id,
+                status=MissionStatus.APPROVED,
+                start_date=start,
+                end_date=date(2027, 3, 10),
+            )
+            s.add(m)
+            s.flush()
+            slot = MissionRequirement(
+                org_id=org.id, mission_id=m.id, position=1, skill_id=skill.id, min_level=3
+            )
+            s.add(slot)
+            s.flush()
+            mission_ids.append(m.id)
+            slots.append(slot.id)
+        s.add(
+            Assignment(
+                org_id=org.id,
+                mission_id=mission_ids[0],
+                requirement_id=slots[0],
+                user_id=crew.id,
+                status=AssignmentStatus.INVITED,
+            )
+        )
+        crew_id, org_id = crew.id, org.id
+        s.commit()
+
+    result = {}
+
+    def send():
+        result["response"] = TestClient(app).post(
+            f"/assignments/{mission_ids[0]}/accept",
+            headers={"Authorization": f"Bearer {create_token(crew_id)}"},
+        )
+
+    try:
+        with Session(engine) as x:
+            x.execute(text("SELECT id FROM app_user WHERE id = :u FOR UPDATE"), {"u": crew_id})
+            thread = threading.Thread(target=send)
+            thread.start()
+            thread.join(0.5)
+            assert thread.is_alive(), "the accept did not wait for the crew user lock"
+            x.add(
+                Assignment(
+                    org_id=org_id,
+                    mission_id=mission_ids[1],
+                    requirement_id=slots[1],
+                    user_id=crew_id,
+                    status=AssignmentStatus.ACCEPTED,
+                )
+            )
+            x.commit()
+        thread.join(10)
+        assert not thread.is_alive()
+        response = result["response"]
+        assert response.status_code == 409
+        assert response.json() == {
+            "detail": 'You are booked on mission "Second" from 2027-03-05 to 2027-03-10.'
+        }
+    finally:
+        with engine.begin() as conn:
+            for table in CLEANUP:
+                conn.execute(text(f"DELETE FROM {table} WHERE org_id = :o"), {"o": org_id})
+            conn.execute(text("DELETE FROM organization WHERE id = :o"), {"o": org_id})

@@ -1,10 +1,13 @@
 from datetime import UTC, date, datetime
 from uuid import uuid4
 
+import pytest
+from test_invite import book, invite, leave
+from test_invite import world as invite_world
 from test_mission_slots import add_slot, make_skill
 from test_profile_conflicts import assign, mission_at
 
-from mc_api.models import AssignmentStatus, MissionStatus, Organization
+from mc_api.models import AssignmentStatus, CrewSkill, MissionStatus, Organization
 from mc_shared import UserRole
 
 A = AssignmentStatus
@@ -81,3 +84,124 @@ def test_lead_and_director_get_403(client, make_user, auth):
 
 def test_list_without_token_gives_401(client):
     assert client.get("/assignments").status_code == 401
+
+
+# Slice 4: accept and decline.
+world = invite_world  # reuse the fixture of test_invite
+NO_INVITE = {"detail": "You have no open invite for this mission."}
+
+
+def respond(client, auth, user, mission_id, verb):
+    return client.post(f"/assignments/{mission_id}/{verb}", headers=auth(user))
+
+
+def invited(session, w, slot="slot2", status=A.INVITED):
+    return assign(session, w["mission"], w[slot], w["c"], status)
+
+
+def test_crew_accepts_an_invite(client, session, auth, world):
+    w = world
+    row = invited(session, w)
+    response = respond(client, auth, w["c"], w["mission"].id, "accept")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(row.id)
+    assert body["status"] == "ACCEPTED"
+    assert body["responded_at"] is not None
+    session.refresh(row)
+    assert row.status == A.ACCEPTED
+    assert row.responded_at is not None
+    assert datetime.fromisoformat(body["responded_at"]) == row.responded_at
+
+
+def test_crew_declines_and_the_slot_is_open_again(client, session, auth, make_user, world):
+    w = world
+    row = invited(session, w, "slot1")
+    response = respond(client, auth, w["c"], w["mission"].id, "decline")
+    assert response.status_code == 200
+    assert response.json()["status"] == "DECLINED"
+    assert response.json()["responded_at"] is not None
+    session.refresh(row)
+    assert (row.status, row.responded_at is not None) == (A.DECLINED, True)
+    d = make_user(UserRole.CREW, w["org"])
+    session.add(CrewSkill(org_id=d.org_id, user_id=d.id, skill_id=w["slot1"].skill_id, level=2))
+    session.flush()
+    assert invite(client, auth, w["lead"], w["mission"], 1, d.username).status_code == 201
+
+
+@pytest.mark.parametrize("status", [A.ACCEPTED, A.DECLINED, A.CANCELLED])
+@pytest.mark.parametrize("verb", ["accept", "decline"])
+def test_only_an_invited_row_can_be_answered(client, session, auth, world, status, verb):
+    w = world
+    row = invited(session, w, status=status)
+    before = row.responded_at
+    response = respond(client, auth, w["c"], w["mission"].id, verb)
+    assert response.status_code == 409
+    assert response.json() == NO_INVITE
+    session.refresh(row)
+    assert (row.status, row.responded_at) == (status, before)
+
+
+@pytest.mark.parametrize("verb", ["accept", "decline"])
+def test_missing_rows_and_other_orgs_give_the_same_404(
+    client, session, auth, make_user, world, verb
+):
+    w = world
+    own_without_row = mission_at(session, w["lead"], "Empty", date(2027, 4, 1), date(2027, 4, 2))
+    foreign_lead = make_user(UserRole.LEAD)
+    foreign = mission_at(session, foreign_lead, "Foreign", date(2027, 4, 1), date(2027, 4, 2))
+    for mission_id in (own_without_row.id, foreign.id, uuid4()):
+        response = respond(client, auth, w["c"], mission_id, verb)
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Not found"}
+
+
+@pytest.mark.parametrize("verb", ["accept", "decline"])
+def test_lead_and_director_get_403_on_respond(client, session, auth, make_user, world, verb):
+    w = world
+    invited(session, w)
+    for role in (UserRole.LEAD, UserRole.DIRECTOR):
+        user = make_user(role, w["org"])
+        response = respond(client, auth, user, w["mission"].id, verb)
+        assert response.status_code == 403
+        assert response.json() == {"role": role, "rule": RULE}
+
+
+def test_accept_rejects_double_booking(client, session, auth, world):
+    w = world
+    row = invited(session, w)
+    book(session, w, "Short", date(2027, 3, 5), date(2027, 3, 6), A.ACCEPTED)
+    response = respond(client, auth, w["c"], w["mission"].id, "accept")
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": 'You are booked on mission "Short" from 2027-03-05 to 2027-03-06.'
+    }
+    session.refresh(row)
+    assert (row.status, row.responded_at) == (A.INVITED, None)
+
+
+def test_accept_does_not_check_skill_or_leave(client, session, auth, world):
+    w = world
+    invited(session, w)
+    session.query(CrewSkill).filter_by(user_id=w["c"].id).update({"level": 1})
+    leave(session, w, date(2027, 3, 5), date(2027, 3, 5))
+    response = respond(client, auth, w["c"], w["mission"].id, "accept")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ACCEPTED"
+
+
+def test_accept_picks_the_invited_row_not_the_cancelled_one(client, session, auth, world):
+    w = world
+    cancelled = invited(session, w, "slot1", A.CANCELLED)
+    open_row = invited(session, w, "slot2")
+    response = respond(client, auth, w["c"], w["mission"].id, "accept")
+    assert response.status_code == 200
+    assert response.json()["id"] == str(open_row.id)
+    session.refresh(cancelled)
+    assert (cancelled.status, cancelled.responded_at) == (A.CANCELLED, None)
+
+
+@pytest.mark.parametrize("verb", ["accept", "decline"])
+def test_a_bad_mission_id_gives_422(client, auth, make_user, verb):
+    response = client.post(f"/assignments/abc/{verb}", headers=auth(make_user(UserRole.CREW)))
+    assert response.status_code == 422

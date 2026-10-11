@@ -9,7 +9,7 @@ def row_with(out, text):
 
 
 def test_staffing_journey(mc):
-    # Spec steps 1 to 4 (first parts). Later slices add the rest in the spec order.
+    # Spec steps 1 to 5. Later slices add the rest in the spec order.
     assert mc("login", "--user", "leo")[0] == 0
     mid = mission_id(mc("missions", "list")[1], "Mars Analogue Habitat")
     code, out = mc("missions", "invite", mid, "--slot", "2", "--crew", "jo")
@@ -29,12 +29,34 @@ def test_staffing_journey(mc):
     assert code == 0
     mars = row_with(out, "Mars Analogue Habitat")
     assert "INVITED" in mars
-    # Spec step 4, first part.
+    code, out = mc("assignments", "accept", mid)
+    assert code == 0
+    assert "ACCEPTED" in out
+    assert "Mars Analogue Habitat" in out
+    assert "ACCEPTED" in row_with(mc("assignments", "list")[1], "Mars Analogue Habitat")
+    # Spec step 4.
     assert mc("login", "--user", "hana")[0] == 0
     code, out = mc("assignments", "list")
     assert code == 0
     assert "INVITED" in row_with(out, "Orbital Debris Survey")
     assert "DECLINED" in row_with(out, "Lunar Relay Repair")
+    assert mc("login", "--user", "lena")[0] == 0
+    orbital = mission_id(mc("missions", "list")[1], "Orbital Debris Survey")
+    assert mc("login", "--user", "hana")[0] == 0
+    code, out = mc("assignments", "decline", orbital)
+    assert code == 0
+    assert "DECLINED" in out
+    assert "Orbital Debris Survey" in out
+    # Spec step 5.
+    assert mc("login", "--user", "lena")[0] == 0
+    code, out = mc("missions", "invite", orbital, "--slot", "2", "--crew", "hana")
+    assert code == 1
+    assert "hana declined this mission." in out
+    code, out = mc("missions", "invite", orbital, "--slot", "2", "--crew", "cara")
+    assert code == 0
+    row = row_with(out, "Robotics")
+    for text in ("cara", "INVITED"):
+        assert text in row
 
 
 def test_lead_cannot_list_assignments(mc):  # spec step 8
@@ -79,3 +101,20 @@ def test_other_org_lead_gets_not_found(mc):  # spec step 10
     code, out = mc("missions", "invite", mid, "--slot", "2", "--crew", "nell")
     assert code == 1
     assert "Not found" in out
+
+
+def test_other_org_crew_cannot_accept(mc):  # spec step 11
+    assert mc("login", "--user", "leo")[0] == 0
+    mid = mission_id(mc("missions", "list")[1], "Mars Analogue Habitat")
+    assert mc("login", "--user", "nell")[0] == 0
+    code, out = mc("assignments", "accept", mid)
+    assert code == 1
+    assert "Not found" in out
+
+
+def test_accept_with_a_bad_id_names_the_field(mc):
+    assert mc("login", "--user", "ava")[0] == 0
+    code, out = mc("assignments", "accept", "abc")
+    assert code == 1
+    assert "mission_id" in out
+    assert "Traceback" not in out
