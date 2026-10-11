@@ -35,6 +35,11 @@ def test_lead_journey(mc):
     assert created
     assert "DRAFT" in out
     assert "additional director" not in out
+    # Spec step 5: the lead edits the own mission.
+    mission_id = created.group(1)
+    code, out = mc("missions", "edit", mission_id, "--title", "Ice Core Drill II")
+    assert code == 0
+    assert "Ice Core Drill II" in out
     # Spec step 6 (part): list and show.
     code, out = mc("missions", "list")
     assert code == 0
@@ -45,9 +50,9 @@ def test_lead_journey(mc):
         "Mars Analogue Habitat",
     ):
         assert title in out
-    code, out = mc("missions", "show", created.group(1))
+    code, out = mc("missions", "show", mission_id)
     assert code == 0
-    assert "Ice Core Drill" in out
+    assert "Ice Core Drill II" in out
     assert "leo" in out
     # Later slices add the next spec steps below, in order.
 

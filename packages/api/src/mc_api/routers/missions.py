@@ -2,12 +2,21 @@ import logging
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from mc_api.dependencies import get_current_user, get_scope, require_roles
+from mc_api.errors import Forbidden
 from mc_api.models import AppUser, Mission, MissionRequirement, Skill
 from mc_api.scope import OrgScope
-from mc_shared import MissionCreate, MissionOut, MissionStatus, MissionSummary, SlotOut, UserRole
+from mc_shared import (
+    MissionCreate,
+    MissionOut,
+    MissionStatus,
+    MissionSummary,
+    MissionUpdate,
+    SlotOut,
+    UserRole,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,3 +119,36 @@ def list_missions(scope: Scope) -> list[MissionSummary]:
 @router.get("/{mission_id}")
 def get_mission(mission_id: UUID, scope: Scope) -> MissionOut:
     return mission_out(scope, scope.get(Mission, mission_id))
+
+
+def editable_mission(scope: OrgScope, user: AppUser, mission_id: UUID) -> Mission:
+    """Lock the mission of the lead. 404, then 403 for a non-owner, then 409 if not DRAFT."""
+    mission = scope.get(Mission, mission_id, for_update=True)
+    if mission.lead_id != user.id:
+        raise Forbidden(user.role, "Directors and leads edit only their own missions")
+    if mission.status != MissionStatus.DRAFT:
+        logger.info("edit of mission %s rejected: status %s", mission.id, mission.status)
+        raise HTTPException(409, f"Mission is {mission.status}. Edits are allowed only in DRAFT.")
+    return mission
+
+
+@router.patch("/{mission_id}")
+def update_mission(
+    mission_id: UUID,
+    body: MissionUpdate,
+    scope: Scope,
+    user: Annotated[AppUser, Depends(get_current_user)],
+) -> MissionOut:
+    mission = editable_mission(scope, user, mission_id)
+    changes = body.model_dump(exclude_none=True)
+    start = changes.get("start_date", mission.start_date)
+    end = changes.get("end_date", mission.end_date)
+    if end < start:
+        logger.info("edit of mission %s rejected: end before start", mission.id)
+        scope.session.rollback()
+        raise HTTPException(422, "end_date must not be before start_date")
+    for field, value in changes.items():
+        setattr(mission, field, value)
+    scope.session.commit()
+    logger.info("mission %s edited by user %s: %s", mission.id, user.id, sorted(changes))
+    return mission_out(scope, mission)

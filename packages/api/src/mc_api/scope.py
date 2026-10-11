@@ -22,9 +22,10 @@ class OrgScope:
     def select(self, model: type[T]) -> Select[tuple[T]]:
         return select(model).where(model.org_id == self.org_id)
 
-    def get(self, model: type[T], id: UUID) -> T:
+    def get(self, model: type[T], id: UUID, *, for_update: bool = False) -> T:
         # Not session.get: it has no org filter. A missing row and another org give the same 404.
-        row = self.session.scalar(self.select(model).where(model.id == id))
+        query = self.select(model).where(model.id == id)
+        row = self.session.scalar(query.with_for_update() if for_update else query)
         if row is None:
             # One message for a missing row and a row of another org, like the 404 body.
             logger.info("not found: %s %s in org %s", model.__name__, id, self.org_id)

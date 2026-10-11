@@ -59,3 +59,18 @@ def show(mission_id: str) -> None:
     print_mission(
         MissionOut.model_validate(request("GET", f"/missions/{quote(mission_id, safe='')}").json())
     )
+
+
+@app.command()
+def edit(
+    mission_id: str,
+    title: str | None = typer.Option(None, "--title"),
+    description: str | None = typer.Option(None, "--description"),
+    start: str | None = typer.Option(None, "--start", help="Start date, YYYY-MM-DD."),
+    end: str | None = typer.Option(None, "--end", help="End date, YYYY-MM-DD."),
+) -> None:
+    """Edit a DRAFT mission that you lead. Only the given options change."""
+    given = {"title": title, "description": description, "start_date": start, "end_date": end}
+    body = {k: v for k, v in given.items() if v is not None}
+    path = f"/missions/{quote(mission_id, safe='')}"
+    print_mission(MissionOut.model_validate(request("PATCH", path, json=body).json()))
