@@ -11,6 +11,9 @@ dependencies = [
     "alembic",
 ]
 
+[project.scripts]
+mc-seed = "mc_api.seed:main"
+
 [tool.uv.sources]
 mc-shared = { workspace = true }
 
