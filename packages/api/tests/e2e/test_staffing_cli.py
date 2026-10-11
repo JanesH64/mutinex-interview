@@ -9,7 +9,7 @@ def row_with(out, text):
 
 
 def test_staffing_journey(mc):
-    # Spec steps 1 and 2. Later slices add steps 3, 4 and 5 in the spec order.
+    # Spec steps 1 to 4 (first parts). Later slices add the rest in the spec order.
     assert mc("login", "--user", "leo")[0] == 0
     mid = mission_id(mc("missions", "list")[1], "Mars Analogue Habitat")
     code, out = mc("missions", "invite", mid, "--slot", "2", "--crew", "jo")
@@ -23,6 +23,26 @@ def test_staffing_journey(mc):
     second = row_with(out, "Communications")
     for text in ("ava", "INVITED"):
         assert text in second
+    # Spec step 3, first part.
+    assert mc("login", "--user", "ava")[0] == 0
+    code, out = mc("assignments", "list")
+    assert code == 0
+    mars = row_with(out, "Mars Analogue Habitat")
+    assert "INVITED" in mars
+    # Spec step 4, first part.
+    assert mc("login", "--user", "hana")[0] == 0
+    code, out = mc("assignments", "list")
+    assert code == 0
+    assert "INVITED" in row_with(out, "Orbital Debris Survey")
+    assert "DECLINED" in row_with(out, "Lunar Relay Repair")
+
+
+def test_lead_cannot_list_assignments(mc):  # spec step 8
+    assert mc("login", "--user", "leo")[0] == 0
+    code, out = mc("assignments", "list")
+    assert code == 1
+    assert "LEAD" in out
+    assert "Only crew members view and respond to assignments" in out
 
 
 def test_non_owner_lead_cannot_invite(mc):  # spec step 6
