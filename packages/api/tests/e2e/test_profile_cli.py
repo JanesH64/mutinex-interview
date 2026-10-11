@@ -37,6 +37,45 @@ def test_crew_journey(mc):
     assert code == 1
     assert "Traceback" not in out
 
+    # Spec steps 5 and 6: add, list and remove unavailability.
+    code, out = mc(
+        "profile", "availability", "add",
+        "--from", "2027-03-01", "--to", "2027-03-05", "--reason", "HOLIDAY",
+    )  # fmt: skip
+    assert code == 0
+    match = re.search(r"Added unavailability ([0-9a-f-]{36})", out)
+    assert match
+    entry_id = match.group(1)
+    code, out = mc("profile", "availability", "list")
+    assert code == 0
+    row = next(line for line in out.splitlines() if entry_id in line)
+    assert all(word in row for word in ("2027-03-01", "2027-03-05", "HOLIDAY"))
+
+    code, out = mc("profile", "availability", "remove", entry_id)
+    assert code == 0
+    assert f"Removed unavailability {entry_id}" in out
+    assert entry_id not in mc("profile", "availability", "list")[1]
+
+
+def test_availability_add_rejects_bad_input(mc):
+    assert mc("login", "--user", "ava")[0] == 0
+    add = ("profile", "availability", "add")
+
+    code, out = mc(*add, "--from", "2027-02-30", "--to", "2027-03-01", "--reason", "SICK")
+    assert code == 1
+    assert "start_date" in out and "Traceback" not in out
+
+    code, out = mc(*add, "--from", "2027-03-01", "--to", "2027-03-02", "--reason", "holiday")
+    assert code == 1
+    assert "reason" in out and "Traceback" not in out
+
+
+def test_availability_add_requires_reason(mc):
+    assert mc("login", "--user", "ava")[0] == 0
+    code, out = mc("profile", "availability", "add", "--from", "2027-03-01", "--to", "2027-03-02")
+    assert code != 0
+    assert "--reason" in out
+
 
 def test_director_is_forbidden(mc):
     assert mc("login", "--user", "diana")[0] == 0

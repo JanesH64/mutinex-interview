@@ -21,6 +21,12 @@ class MissionStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class UnavailabilityReason(StrEnum):
+    HOLIDAY = "HOLIDAY"
+    SICK = "SICK"
+    MEETING = "MEETING"
+
+
 class Health(BaseModel):
     status: str
     db: str
@@ -132,3 +138,22 @@ class CrewSkillOut(BaseModel):
     skill_id: UUID
     skill_name: str
     level: int
+
+
+class UnavailabilityCreate(BaseModel):
+    start_date: date
+    end_date: date
+    reason: UnavailabilityReason
+
+    @model_validator(mode="after")
+    def check_dates(self) -> Self:
+        if self.end_date < self.start_date:
+            raise ValueError("end_date must be on or after start_date")
+        return self
+
+
+class UnavailabilityOut(BaseModel):
+    id: UUID
+    start_date: date
+    end_date: date
+    reason: UnavailabilityReason

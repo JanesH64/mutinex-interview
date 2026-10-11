@@ -5,9 +5,16 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from mc_api.dependencies import get_current_user, get_scope, require_roles
-from mc_api.models import AppUser, CrewSkill, Skill
+from mc_api.models import AppUser, CrewSkill, Skill, Unavailability
 from mc_api.scope import OrgScope
-from mc_shared import CrewSkillOut, ProfileOut, SkillLevel, UserRole
+from mc_shared import (
+    CrewSkillOut,
+    ProfileOut,
+    SkillLevel,
+    UnavailabilityCreate,
+    UnavailabilityOut,
+    UserRole,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,3 +89,50 @@ def remove_skill(
     scope.session.commit()
     logger.info("user %s removed skill %s", user.id, skill_id)
     return Response(status_code=204)
+
+
+@router.get("/unavailability")
+def list_unavailability(
+    user: Annotated[AppUser, Depends(get_current_user)],
+    scope: Annotated[OrgScope, Depends(get_scope)],
+) -> list[UnavailabilityOut]:
+    rows = scope.session.scalars(
+        scope.select(Unavailability)
+        .where(Unavailability.user_id == user.id)
+        .order_by(Unavailability.start_date, Unavailability.end_date)
+    )
+    return [UnavailabilityOut.model_validate(r, from_attributes=True) for r in rows]
+
+
+@router.post("/unavailability", status_code=201)
+def add_unavailability(
+    body: UnavailabilityCreate,
+    user: Annotated[AppUser, Depends(get_current_user)],
+    scope: Annotated[OrgScope, Depends(get_scope)],
+) -> UnavailabilityOut:
+    row = Unavailability(org_id=scope.org_id, user_id=user.id, **body.model_dump())
+    scope.session.add(row)
+    scope.session.commit()
+    logger.info("user %s added unavailability %s", user.id, row.id)
+    return UnavailabilityOut.model_validate(row, from_attributes=True)
+
+
+@router.delete("/unavailability/{unavailability_id}", status_code=204)
+def remove_unavailability(
+    unavailability_id: UUID,
+    user: Annotated[AppUser, Depends(get_current_user)],
+    scope: Annotated[OrgScope, Depends(get_scope)],
+) -> None:
+    row = scope.session.scalar(
+        scope.select(Unavailability).where(
+            Unavailability.id == unavailability_id, Unavailability.user_id == user.id
+        )
+    )
+    if row is None:
+        logger.info(
+            "unavailability remove by user %s rejected: %s not found", user.id, unavailability_id
+        )
+        raise HTTPException(404, "Not found")
+    scope.session.delete(row)
+    scope.session.commit()
+    logger.info("user %s removed unavailability %s", user.id, unavailability_id)
