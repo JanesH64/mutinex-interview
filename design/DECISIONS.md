@@ -32,7 +32,7 @@ This file contains my personal decisions and assumptions made based on the BRIEF
 5. Initial version of mission lifecycle management
     - Each missions needs approval
     - Leads send for approval to Director
-    - Directors approve / reject
+    - Directors approve / reject. The approval view shows the matcher preview
     - Crew members accept/ decline assignment
 6. Directors can view the whole org (broad view)
     - All missions
@@ -49,17 +49,29 @@ This file contains my personal decisions and assumptions made based on the BRIEF
     - Inputs: Skills, availability, workload
     - Lead can run a readonly preview in draft status to check the mission can be staffed before submit
     - Invites only when mission is approved
-    - Rank breakdown per suggestion - defer to P1?
+    - Rematching only fills open slots and never suggests a member who declined this mission
 #### CLI
 11. Primary workflows run through the CLI: login, missions list /detail, create/ edit, submit, approve / reject, matching preview and invites, my assignments and history (crew), accept / decline, my profile and availability (crew).
 #### Quality
-12. Tests
-    - Cross org access tests for all endpoints
-    - Matcher and mission lifecycle transitions
-    - RBAC: no self approval, role visibility / actions
+12. Tests: minimal happy path only for now
+    - Happy path per workflow: lifecycle, matcher, invites and responses, crew profile
+    - Cross org access checks: other org's resources return 404
 13. Evidence of verification
     - Scripted end-to-end CLI demo over the seed data (full mission lifecycle)
     - Test results documented: Readme?
+
+### P0 build order
+Each step ends with its happy path test and cross org check. Each step is one or more commits.
+1. Skeleton: docker-compose Postgres, FastAPI app, Alembic, Typer entry point, README run steps
+2. Data model + first migration + seed data (2 orgs, 2 directors in one org, leads, crew, skills, leave, existing assignments for workload)
+3. Auth and tenant: mc login, JWT with user_id, per request user / org / role load, org scoped data-access layer, RBAC error format
+4. Missions in DRAFT: create, edit, slots, list, show
+5. Matcher preview: filters, ranking, slot assignment. mc missions match
+6. Approval: submit, withdraw, approve, reject. No self approval, additional director flag, preview in approval view
+7. Staffing: invite, mc assignments list / accept / decline, double booking check, decliner exclusion on rematch
+8. Remaining transitions: back to draft, start (guard), complete, cancel. Assignment cancellation
+9. Crew profile: mc profile show, skills, availability
+10. Scripted end-to-end CLI demo + test results in README
 
 ### P1: Next extensions: If time permits in this session
 #### Crew and skills
@@ -69,43 +81,49 @@ This file contains my personal decisions and assumptions made based on the BRIEF
 2. Mission audit logs
 #### Matching
 3. Decision insights for lead: Excluded members: Why?
+4. Rank breakdown per suggestion: Why is this the best person for the slot
 ...
 
 ### P2: Scoped as outside of this session
 #### Auth and tenant
 1. Noisy-neighbour protection / uneven org sizes in this multi tenant architecture
 2. Real idp oidc, login / signup, 
-3. Postgres RLS?
+3. Postgres RLS as second layer for reads (composite FKs only protect writes / links)
 4. User and role management
 #### Mission lifecycle
 5. Approval workflow customization
 6. Crew members withdraw after accepting
+7. Reject with comment, cancel with reason
+8. Reassign the lead of a mission
 #### Crew and skills
-7. Edit / archive skills
-8. Verification of self assessed proficiency
+9. Edit / archive skills
+10. Verification of self assessed proficiency
 #### Matching
-9. Additional resource constraints, extending the matching engine
-10. No matches and report gap and potential resolutions
-11. Rest buffer between missions
-12. Mission priority
-13. Optimize for larger orgs with lots of staff
+11. Additional resource constraints, extending the matching engine
+12. No matches and report gap and potential resolutions
+13. Rest buffer between missions
+14. Mission priority
+15. Optimize for larger orgs with lots of staff
 #### Operations
-13. CI / CD
-14. Scalability, Observability, IaC, offline jobs, etc. 
+16. CI / CD
+17. Scalability, Observability, IaC, offline jobs, etc. 
 
 ## Ambiguity resolution
 1. Different skill taxonomy per org -> Skills owned by each org with fixed proficiency scale (1-5)
 2. Different approval processes per org -> Initial scope will be one single director approval in code. Later extension to DB stored approval configs
-3. Leads cannot approve their own missions -> One role per user with hierarchy Director > Lead, so a director can also lead missions. The mission lead can never approve their own mission. A director who is also leading a mission needs a second director to get approval.
-4. Who can be assinged to a mission: Only crew members can be assigned to missions.
-4. Directors approve missions -> A mission to approve consists of requirements, timeline and date. Lead can preview the matcher in draft to check the mission can be staffed before submit. Invites happen only after approval, so scarce skills are not reserved for unfunded missions. No separate steps for now
-5. Changing after approval -> Missions can only be edited in draft. Before changing mission details after a director approved lead needs to put the mission back to draft status. Staffing changes (e.g. replacing a declined crew member) are not a change and need no new approval.
-6. Availability tracking -> Instead of managing available periods it is more pragmatic to manage unavailable timeslots: holiday leave, sick leave, internal meetings, etc. Dates only. A crew member is blocked by unavailability, invited and accepted assignments.
-7. Account for workload in matching -> Initially setting to booked mission days (invited + accepted) in time window (e.g. 90d) before and after the mission. Rest between missions deferred to P2
-8. Crew has "limited" visibility -> Fixing to profile, own mission assignments and mission details. Enforced via RBAC in the API
-9. Data must never leak across tenants -> Org enforced in data-access layer and with composite foreign keys in DB. Cross org access returns 404 dont indicate resource exists in responses for security?
-10. Crews accept missions -> Crew members need to respond to approved missions. Only an approved mission is sent to the Crew members to ensure the whole mission is funded before reserving scarce skills for a mission. Otherwise skills might be missing for other missions currently being planned. 
-11. Mission requirements -> A mission has slots: skill + minimum level. One skill per slot. One crew member fills max one slot per mission.
+3. Leads cannot approve their own missions -> One role per user with hierarchy Director > Lead, so a director can also lead missions. The mission lead can never approve their own mission. A director who is also leading a mission needs a second director to get approval. On mission creation the API and CLI flag that this mission requires an additional director for approval.
+4. Who can be assinged to a mission: Only crew members can be assigned to missions. A lead is never a crew member and a director is never a crew member. The Director > Lead hierarchy does not include Crew.
+5. Directors approve missions -> A mission to approve consists of requirements, timeline and date. Lead can preview the matcher in draft to check the mission can be staffed before submit. The director sees the same matcher preview in the approval view. Invites happen only after approval, so scarce skills are not reserved for unfunded missions. No separate steps for now
+6. Changing after approval -> Missions can only be edited in draft. Before changing mission details after a director approved lead needs to put the mission back to draft status. All INVITED / ACCEPTED assignments are then CANCELLED. Staffing changes (e.g. replacing a declined crew member) are not a change and need no new approval.
+7. Availability tracking -> Instead of managing available periods it is more pragmatic to manage unavailable timeslots: holiday leave, sick leave, internal meetings, etc. Dates only. A crew member is blocked by unavailability, invited and accepted assignments.
+8. Account for workload in matching -> Initially setting to booked mission days (invited + accepted) in time window (e.g. 90d) before and after the mission. Rest between missions deferred to P2
+9. Crew has "limited" visibility -> Fixing to profile, own mission assignments and mission details. Enforced via RBAC in the API
+10. Data must never leak across tenants -> Reads are protected by the org scoped data-access layer only. Composite foreign keys in DB protect writes / links. Error rule:
+    - Resource does not exist -> 404
+    - Resource exists in another org -> 404, so the response never reveals that it exists
+    - Resource exists in the own org but the role has no access -> 403 with role and rule
+11. Crews accept missions -> Crew members need to respond to approved missions. Only an approved mission is sent to the Crew members to ensure the whole mission is funded before reserving scarce skills for a mission. Otherwise skills might be missing for other missions currently being planned. 
+12. Mission requirements -> A mission has slots: skill + minimum level. One skill per slot. One crew member fills max one slot per mission.
 
 ## RBAC role resolution
 - Directors 
@@ -127,31 +145,41 @@ This file contains my personal decisions and assumptions made based on the BRIEF
 
 ## Tenant isolation
 - Each user is assigned to one single organization for now
-- JWT only carries user_id. Org and role are loaded from DB on each request -> role changes apply immediately but creates DB load. In a highly regulated space like in a space agency might be better to revoke early, but needs further discussion in low level task
+- JWT only carries user_id. Org and role are loaded from DB on each request -> role changes and revocation apply immediately. The cost is one primary key lookup per request. Decided.
 - Every query needs to pass a data-access layer that checks their own org and the org data they want to retrieve / change
     - Every referenced id (e.g. skill_id, crew_id) is looked up with org filter. Cross org returns no data
-- Composite foreign keys as second layer so DB rejects cross org links even if the data-access layer has a bug
+- Composite foreign keys as second layer for writes so DB rejects cross org links even if the data-access layer has a bug. They do not protect reads. Reads rely on the data-access layer only
     - Every tenant table has org_id, parent tables have UNIQUE(org_id, id)
     - Child tables reference (org_id, x_id) -> parent(org_id, id): assignment -> mission / user, mission_requirement -> mission / skill, crew_skill -> user / skill, unavailability -> user, mission.lead_id -> user
     - Only crew can be assigned is not covered by FK -> checked in service layer
-- Will ensure via cross org acess tests - parametrized test over all endpoints?
-- Potential postgres feature using RLS? Third layer? - Defer for now
+- Will ensure via cross org access checks in the happy path tests
+- Postgres RLS would be the second layer for reads - Deferred to P2
+
+## Short references
+UUID primary keys stay internal. Each resource also has a human readable key for the CLI, enforced by a DB unique constraint.
+- Users: `username`, globally unique, because `mc login --user` has no org context. Crew references in the CLI use the username
+- Skills: `slug` with UNIQUE(org_id, slug). A duplicate slug is rejected with a clear error, no auto suffix
+- Missions: per org code `MSN-<n>` with UNIQUE(org_id, number). Next number via `UPDATE org SET mission_seq = mission_seq + 1 ... RETURNING` in the same transaction. The row lock serializes concurrent creates, so no collisions
+- Slots: position in the mission (1, 2, 3) with UNIQUE(mission_id, position)
+- Assignments: referenced by mission code. Partial unique index: one INVITED / ACCEPTED assignment per (mission_id, user_id)
 
 ## Initial mission lifecycle
-1. DRAFT: Mission lead creates, edits mission. Can preview the matcher
-2. APPROVAL_REQUIRED:  Mission details are finalized. Mission is sent to Director for approval. Awaiting response
-    - Director rejects with comment -> back to DRAFT
+1. DRAFT: Mission lead creates, edits mission. Can preview the matcher. If the lead is a director, the mission is flagged as requiring an additional director for approval
+2. APPROVAL_REQUIRED:  Mission details are finalized. Mission is sent to Director for approval. Director sees the matcher preview. Awaiting response
+    - Director rejects -> back to DRAFT (no comment, P2)
     - Lead withdraws -> back to DRAFT
 3. APPROVED: Mission is approved and mission lead performs staffing. Inviting the crew. Awaiting their response. 
-5. ACTIVE: Mission lead started the mission
-6. COMPLETED: Mission lead completed the mission
-7. CANCELLED: Cancelled by mission lead with a reason. Changing to this state from any state except COMPLETED.
+    - Lead puts mission back to DRAFT to change details -> all INVITED / ACCEPTED assignments become CANCELLED
+4. ACTIVE: Mission lead started the mission. Guard: every slot has an ACCEPTED assignment
+5. COMPLETED: Mission lead completed the mission
+6. CANCELLED: Cancelled by mission lead (no reason, P2). Changing to this state from any state except COMPLETED. All INVITED / ACCEPTED assignments become CANCELLED.
 - Transitions stored in code for now to reduce scope (from, to) -> allowed roles. Extension point for approval workflow customization later
 
 ## Assignment lifecycle
 1. INVITED: Lead invites crew member. Only when mission is APPROVED
 2. ACCEPTED: Crew member accepted
-3. DECLINED: Crew member declined. Slot is open again, lead reruns matching
+3. DECLINED: Crew member declined. Slot is open again, lead reruns matching. The matcher never suggests this member for this mission again
+4. CANCELLED: Mission went back to DRAFT or was cancelled. Frees the crew member's availability
 - Double booking check when inviting and accepting - DB constraint?
 
 ## Staffing matching v1
@@ -162,11 +190,16 @@ This file contains my personal decisions and assumptions made based on the BRIEF
     - Available during timeframe / no unavailability during timeframe
         - other mission (invited or accepted)
         - leave
+    - Has not declined this mission
+- P0: Rematching only fills open slots (no INVITED / ACCEPTED assignment)
 - P0: Rank / boost member in selection set if:
     - Lower workload than others
     - ~~(past mission with same skills? - member should update the proficiency themself then so exclude for now)~~
     - Be mindful of experts - could be required by other mission with higher proficiency requirement -> closest fit: proficiency closest to minimum ranks higher
+    - Potential term: skill scarcity - fewer other members can fill slots with this skill -> member ranks lower to keep them free
 - P0: All slots are matched together for now (linear optimization?)
+    - Potential lib: scipy (`linear_sum_assignment`). Evaluate in the low level step
+- Other constraints (resources, rest buffer, priority) left out for now, see P2
 - P1: Rank breakdown: Why is this the best person for the slot
 - P1: Decision insights for lead
     - Excluded members: Why?
@@ -180,9 +213,9 @@ API + CLI. One language (Python) for API and CLI keeps the stack small
     - CLI to API 
     - Stores the token locally after login
     - Table views by default, flag for scripting?
-2. Backend FastAPI +Pydantic + SQLAlchemy with Alembic: Typed OpenAPI spec for the CLI and safe DB access with migrations
+2. Backend FastAPI +Pydantic + SQLAlchemy with Alembic: Typed API with generated OpenAPI docs and safe DB access with migrations
     - Matching could require additional libs for optimization problem or naive solution? to be decided in low level step
-    - openapi-python-client for typed API client
+    - Typed API client: shared Pydantic package in the same repository. API and CLI import the same request / response types. No generated OpenAPI client, so no regeneration step. The shared package depends on Pydantic only, no FastAPI or SQLAlchemy
 3. Database: Postgres
 4. Local JWT login with seeded users
     - Token only carries user_id, org and role loaded per request -> explained abovr
@@ -191,20 +224,18 @@ API + CLI. One language (Python) for API and CLI keeps the stack small
 ### MVP CLI commands v0
 1. Login: mc login --user username, mc logout
 2. Missions list: mc missions list
-3. Mission detail: mc missions show id
+3. Mission detail: mc missions show MSN-42
     - Edit, submit, approve or reject: mc missions create|edit|submit|withdraw|approve|reject|cancel|start|complete
-    - Staff with the matcher: mc missions match id, mc missions invite id --slot slotId --crew crewId (APPROVED only)
+    - Staff with the matcher: mc missions match MSN-42, mc missions invite MSN-42 --slot 1 --crew username (APPROVED only)
 4. My assignments (Crew): mc assignments list (current and history)
-    - Accept, decline: mc assignments accept|decline id
+    - Accept, decline: mc assignments accept|decline MSN-42
 5. My profile (Crew): mc profile show
-    - Skills: mc profile skills set skillId --level n, mc profile skills remove skillId
-    - Availability: mc availability list / add --from date --to date / remove id
+    - Skills: mc profile skills set skill-slug --level n, mc profile skills remove skill-slug
+    - Availability: mc profile availability list / add --from date --to date / remove id
 
 ## Open questions / follow ups
 - Additonal step required to indicate invited members? INVIATION_PENDING / STAFFING?
-- To be clarified workflow v1 steps sufficient? (Staffing before vs after approval
 - Crew adds unavailability that overlaps an INVITED / ACCEPTED assignment: reject, warn or auto-decline?
 - Crew lowers a skill level below a slot minimum while INVITED / ACCEPTED: keep, warn or flag to lead?
-- Can a Director be a mission lead at the same time? Assumed yes for now
 - Double booking prevention for crew members, dive deep into DB constraints
-- Fast revocation of token with instant lookup of org and role per user request or slow role change with longer lived token but less DB load
+- API paths: short references (MSN-42) or UUIDs? Codes simplify the CLI, UUIDs keep paths stable if a code ever changes
