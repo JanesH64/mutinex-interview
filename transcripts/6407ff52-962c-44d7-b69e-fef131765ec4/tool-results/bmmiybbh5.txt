@@ -1,0 +1,415 @@
+ls: .claude/commands: No such file or directory
+ls: .claude/skills: No such file or directory
+.claude:
+hooks
+project.sh
+settings.json
+cat: .claude/commands/implement-plan.md: No such file or directory
+cat: .claude/skills/implement-plan/SKILL.md: No such file or directory
+----
+# Missions in DRAFT Implementation Plan
+
+> Run with /implement-plan /Users/janeshorst/Dev/mutinex-interview/.work/missions-draft/plan.md in a fresh context.
+
+**Goal:** Move the API routes into `mc_api/routers/` and the CLI commands into `mc_cli/commands/`. Then add the skill list, and the DRAFT missions with create, list, show, edit and slots, in the API and the CLI.
+
+**Architecture:** The API follows the FastAPI "Bigger Applications" structure. `main.py` includes one `APIRouter` for each resource. `dependencies.py` holds the shared dependencies. The missions router has a router-level role check for crew. Each mission write loads the mission with a row lock and checks the owner and the DRAFT status. Then it changes the rows and commits. The CLI has one Typer module for each command group.
+
+**Tech Stack:** Python 3.12, FastAPI 0.143, Pydantic 2, SQLAlchemy 2.1, Typer 0.27, httpx, Rich 15, pytest, Postgres 17.
+
+**Spec:** /Users/janeshorst/Dev/mutinex-interview/.work/missions-draft/spec.md
+**Verify:** verify:full = `.claude/hooks/verify.sh full`; verify:fast = `.claude/hooks/verify.sh fast`
+**Contract:** Covers, Tests must prove, Files, Interfaces, Global Constraints and Checkpoint are binding. Report each change to them to the human. The implementer chooses the code.
+
+## Global Constraints
+
+- Step 4 starts after Step 3 is complete, as `.work/auth-tenant/plan.md` describes it. Before slice 1, check that these parts exist: `OrgScope.get` and `OrgScope.select`, `mc_api/errors.py` with `Forbidden`, `GET /users/{id}`, and `error_message` for 403 and 404. If one is missing, stop and tell the human.
+- Do not change the schema. `alembic check` on `mc_test` must report no difference (`packages/api/tests/test_migration.py`).
+- Put each request and response type in `mc_shared`. It depends only on Pydantic (`packages/shared/pyproject.toml:6`).
+- Use absolute imports (`from mc_api.x import ...`), as in the codebase. Do not use the relative imports of the FastAPI tutorial.
+- `mc_api.main:app` and `mc_cli.main:app` keep their names. The tests, uvicorn and the `mc` script use them (`packages/api/tests/conftest.py:61`, `packages/cli/pyproject.toml:8`).
+- Routers read tenant data only through `OrgScope`. Only `routers/health.py` (`SELECT 1`) and the login route take a raw `Session`.
+- A missing row and a row of another org give the same 404 body: `{"detail": "Not found"}`.
+- Exact error bodies:
+  - Crew on a mission route: 403 `{"role": "CREW", "rule": "Only directors and leads manage and view missions"}`.
+  - Non-owner: 403 `{"role": "<ROLE>", "rule": "Directors and leads edit only their own missions"}`.
+  - Not DRAFT: 409 `{"detail": "Mission is <STATUS>. Edits are allowed only in DRAFT."}`.
+  - Unknown skill: 422 `{"detail": "Unknown skill: <skill_id>"}`.
+- Check order of a mission write: crew 403 (router dependency), then 404, then non-owner 403, then 409, then 422 for the body.
+- Each mission write loads the mission with `SELECT ... FOR UPDATE` through `OrgScope.get(..., for_update=True)`. Then it checks, changes the rows and commits. `get_session` does not commit (`packages/api/src/mc_api/db.py:27-29`).
+- `requires_additional_director` is derived from the current role of the lead. Never store it.
+- Integration tests create their own orgs and users with `make_user` (`packages/api/tests/conftest.py:68-85`). No test assumes empty tables.
+- The E2E tests have the marker `e2e` and use the seed data. verify:fast excludes them. verify:full runs them.
+- Only the test writer edits paths that match `TEST_PATTERNS` in `.claude/project.sh:6-8` (`^packages/[^/]+/tests/`). This includes each `conftest.py`.
+- Do not edit `BRIEF.md`.
+
+## Review Focus
+
+1. `PATCH /missions/{id}` with `{}` or with `{"title": null}`. Expected: 200 and no change, never 500. The API ignores a null field. Slice 4 tests it.
+2. `POST /missions` with `"title": ""`. Expected: 422. Slice 3 tests it.
+3. A mission ID that is not a UUID: `GET /missions/not-a-uuid` and `mc missions show abc`. Expected: 422 from the API. The CLI prints the field and the message, exits 1 and shows no traceback. Slice 3 tests it.
+4. A wrong date in the CLI: `mc missions create ... --start 2027-13-01`. Expected: exit 1. The output names `start_date` and shows no traceback. Slice 3 tests it.
+5. A slot position that has no active slot or is not a number: `DELETE /missions/{id}/slots/0` and `/slots/abc`. Expected: 404 for `0`, 422 for `abc`, never 500. Slice 5 tests it.
+
+---
+
+## File structure
+
+| Path | Responsibility | Slice |
+|---|---|---|
+| `packages/api/src/mc_api/main.py` | Creates `app`, includes each router, registers the `Forbidden` handler. No route function. | 1, 2, 3 |
+| `packages/api/src/mc_api/dependencies.py` (new) | `get_current_user`, `get_scope`, `require_roles` | 1, 3 |
+| `packages/api/src/mc_api/auth.py` | Keeps `JWT_SECRET`, `TOKEN_TTL`, `create_token`, `find_user_by_username`, `unauthorized`. `get_current_user` moves out. | 1 |
+| `packages/api/src/mc_api/scope.py` | Keeps `OrgScope`. `get_scope` moves out. `get` gets `for_update`. | 1, 4 |
+| `packages/api/src/mc_api/routers/__init__.py` (new) | Empty | 1 |
+| `packages/api/src/mc_api/routers/health.py` (new) | `GET /health` (moved) | 1 |
+| `packages/api/src/mc_api/routers/auth.py` (new) | `POST /auth/login`, `GET /me` (moved) | 1 |
+| `packages/api/src/mc_api/routers/users.py` (new) | `GET /users/{user_id}` (moved) | 1 |
+| `packages/api/src/mc_api/routers/skills.py` (new) | `GET /skills` | 2 |
+| `packages/api/src/mc_api/routers/missions.py` (new) | The mission and slot routes | 3, 4, 5 |
+| `packages/api/src/mc_api/models.py` | Imports `MissionStatus` from `mc_shared` | 3 |
+| `packages/shared/src/mc_shared/__init__.py` | `SkillOut`, `MissionStatus`, `MissionCreate`, `MissionUpdate`, `SlotCreate`, `SlotOut`, `MissionOut`, `MissionSummary` | 2, 3, 4, 5 |
+| `packages/cli/src/mc_cli/main.py` | Typer `app`, `health`, registration of the command modules | 1, 2, 3 |
+| `packages/cli/src/mc_cli/commands/__init__.py` (new) | Empty | 1 |
+| `packages/cli/src/mc_cli/commands/auth.py` (new) | `login`, `whoami`, `logout` (moved) | 1 |
+| `packages/cli/src/mc_cli/commands/skills.py` (new) | `mc skills list` | 2 |
+| `packages/cli/src/mc_cli/commands/missions.py` (new) | `mc missions create\|edit\|list\|show`, `mc missions slots add\|remove` | 3, 4, 5 |
+| `packages/cli/src/mc_cli/client.py` | `error_message` for 409 and 422 | 3, 4 |
+| `packages/api/tests/e2e/conftest.py` (test writer, new) | `api_url` and `mc` fixtures, moved from `test_auth_cli.py` | 1 |
+| `packages/api/tests/e2e/test_auth_cli.py` (test writer) | Uses the fixtures from `e2e/conftest.py` | 1 |
+| `packages/api/tests/test_structure.py` (test writer, new) | Router structure | 1 |
+| `packages/cli/tests/test_commands.py` (test writer, new) | CLI command registration | 1 |
+| `packages/api/tests/test_skills.py` (test writer, new) | `GET /skills` | 2 |
+| `packages/api/tests/test_missions.py` (test writer, new) | Create, list, show, crew, cross-org | 3 |
+| `packages/api/tests/test_mission_edit.py` (test writer, new) | PATCH | 4 |
+| `packages/api/tests/test_mission_slots.py` (test writer, new) | Slot add and remove | 5 |
+| `packages/cli/tests/test_client_errors.py` (test writer) | 409 and 422 messages | 3, 4 |
+| `packages/api/tests/e2e/test_missions_cli.py` (test writer, new) | The spec "End-to-end check" | 2, 3, 4, 5 |
+
+---
+
+### Slice 1: The API routes and the CLI commands live in their own packages, with no change of behaviour
+
+**Files:**
+- Modify: `packages/api/src/mc_api/main.py`, `packages/api/src/mc_api/auth.py`, `packages/api/src/mc_api/scope.py`, `packages/cli/src/mc_cli/main.py`
+- Create: `packages/api/src/mc_api/dependencies.py`, `packages/api/src/mc_api/routers/__init__.py`, `packages/api/src/mc_api/routers/health.py`, `packages/api/src/mc_api/routers/auth.py`, `packages/api/src/mc_api/routers/users.py`, `packages/cli/src/mc_cli/commands/__init__.py`, `packages/cli/src/mc_cli/commands/auth.py`
+- Test (test writer): `packages/api/tests/test_structure.py`, `packages/cli/tests/test_commands.py`, `packages/api/tests/e2e/conftest.py`, `packages/api/tests/e2e/test_auth_cli.py`
+
+**Covers:** AC1
+
+**Tests must prove:** Each API route lives in a module of `mc_api.routers`. The shared dependencies are in `mc_api.dependencies`. The CLI commands are in `mc_cli.commands`, and `mc login`, `mc whoami` and `mc logout` stay top-level. All Step 3 tests pass with no change of their assertions. Examples:
+- unit: each `APIRoute` in `mc_api.main.app.routes` has `route.endpoint.__module__` that starts with `mc_api.routers.` → true for all. The set of paths contains `/health`, `/auth/login`, `/me` and `/users/{user_id}`.
+- unit: `from mc_api.dependencies import get_current_user, get_scope` → no import error.
+- unit: `CliRunner().invoke(mc_cli.main.app, ["--help"])` → exit 0. The output contains `health`, `login`, `whoami` and `logout`.
+- unit: `mc_cli.commands.auth.login`, `.whoami` and `.logout` exist.
+- integration: `test_auth.py`, `test_users.py`, `test_scope.py` and `test_health.py` pass with no change.
+- E2E: `test_auth_cli.py` passes with the fixtures in `e2e/conftest.py`. Its test functions do not change.
+
+**Checkpoint:** `.claude/hooks/verify.sh full` → exit 0, no `ERROR` line. The E2E test `packages/api/tests/e2e/test_auth_cli.py` ran and passed. The test count is the Step 3 count plus the new structure tests.
+
+**Interfaces:**
+- Consumes: `get_current_user` (`packages/api/src/mc_api/auth.py:36-56`), `get_scope` (`packages/api/src/mc_api/scope.py:26-30`), the routes in `packages/api/src/mc_api/main.py`, the commands in `packages/cli/src/mc_cli/main.py:39-63`.
+- Produces:
+
+  ```python
+  # mc_api.dependencies
+  def get_current_user(credentials, session: Session = Depends(get_session)) -> AppUser  # moved, same behaviour
+  def get_scope(user: AppUser = Depends(get_current_user), session = Depends(get_session)) -> OrgScope  # moved
+
+  # mc_api.routers.<module>
+  router = APIRouter(...)   # one per module: health, auth, users
+
+  # mc_api.main
+  app = FastAPI(title="Mission Control")
+  app.include_router(health.router); app.include_router(auth.router); app.include_router(users.router)
+
+  # mc_cli.commands.auth
+  def login(user: str) -> None; def whoami() -> None; def logout() -> None
+  ```
+
+  E2E fixtures in `packages/api/tests/e2e/conftest.py`: `api_url` (module scope) and `mc`, with the same behaviour as `packages/api/tests/e2e/test_auth_cli.py:21-66`. The `mc` env also sets `COLUMNS=200`, so Rich does not wrap the UUID columns.
+
+**Steps:**
+
+- [ ] **Step 1 (test writer): Write the tests.**
+  - Move `ROOT`, the `api_url` fixture and the `mc` fixture from `test_auth_cli.py` to `e2e/conftest.py`. Add `"COLUMNS": "200"` to the `mc` env.
+  - Keep `HINT` and the test functions in `test_auth_cli.py`.
+  - Write `test_structure.py` and `test_commands.py` with the unit examples above.
+- [ ] **Step 2: Run the new tests and see them fail.** Run `uv run pytest packages/api/tests/test_structure.py packages/cli/tests/test_commands.py -q`. Expected: FAIL. `mc_api.dependencies` and `mc_cli.commands` do not exist.
+- [ ] **Step 3 (implementer): Move the dependencies.**
+  - Move `bearer` and `get_current_user` from `mc_api/auth.py` to `mc_api/dependencies.py`.
+  - Move `get_scope` from `mc_api/scope.py` to `mc_api/dependencies.py`.
+  - `scope.py` then does not import `mc_api.auth`.
+- [ ] **Step 4 (implementer): Move the routes.**
+  - Put each route in its router module, with `router = APIRouter(tags=[...])`.
+  - `routers/users.py` uses `prefix="/users"`.
+  - `routers/auth.py` has no prefix, because it serves `/auth/login` and `/me`.
+  - In `main.py`, keep only the app, the `include_router` calls and the `Forbidden` handler.
+- [ ] **Step 5 (implementer): Move the CLI commands.**
+  - Move `login`, `whoami`, `logout` and `show` to `mc_cli/commands/auth.py`.
+  - Register them on `app` in `main.py` as top-level commands, for example `app.command()(auth.login)`.
+  - Keep `health` in `main.py`.
+- [ ] **Step 6: Run the checkpoint.** Run `.claude/hooks/verify.sh full`. Expected: exit 0, no `ERROR` line.
+
+---
+
+### Slice 2: Each user lists the skills of the own org
+
+**Files:**
+- Modify: `packages/shared/src/mc_shared/__init__.py`, `packages/api/src/mc_api/main.py`, `packages/cli/src/mc_cli/main.py`
+- Create: `packages/api/src/mc_api/routers/skills.py`, `packages/cli/src/mc_cli/commands/skills.py`
+- Test (test writer): `packages/api/tests/test_skills.py`, `packages/api/tests/e2e/test_missions_cli.py`
+
+**Covers:** AC15, AC16 (`mc skills list`)
+
+**Tests must prove:** `GET /skills` returns the skills of the own org, sorted by name, for each role. It returns no skill of another org. `mc skills list` shows the ID and the name of each skill. Examples:
+- integration: org A with skills `Zeta` and `Alpha` (description `"x"`), org B with skill `Beta`. A director, a lead and a crew member of org A each call `GET /skills` → 200. The body equals `[{"id": <Alpha id>, "name": "Alpha", "description": "x"}, {"id": <Zeta id>, "name": "Zeta", "description": null}]`.
+- integration: `GET /skills` without a token → 401.
+- E2E (spec step 1): `mc login --user leo`, then `mc skills list` → exit 0. The output contains `Piloting`, `EVA`, `Medicine`, `Robotics`, `Geology` and `Communications`, each on one line with a UUID. It does not contain `Welding`.
+
+**Checkpoint:** `.claude/hooks/verify.sh full` → exit 0, no `ERROR` line. `packages/api/tests/e2e/test_missions_cli.py` ran and passed.
+
+**Interfaces:**
+- Consumes: `get_scope` and `OrgScope.select` from slice 1 and Step 3. `Skill` from `mc_api.models`. `request` from `mc_cli.client`. The `mc` fixture from `e2e/conftest.py`.
+- Produces:
+
+  ```python
+  # mc_shared
+  class SkillOut(BaseModel): id: UUID; name: str; description: str | None
+
+  # mc_api.routers.skills
+  router = APIRouter(prefix="/skills", tags=["skills"])
+  # GET /skills -> list[SkillOut], ordered by name
+
+  # mc_cli.commands.skills
+  app = typer.Typer()   # registered in mc_cli.main as "skills"; command "list"
+  ```
+
+  E2E helper in `test_missions_cli.py`: `skill_ids(out: str) -> dict[str, str]` maps each skill name to its UUID. It parses the `mc skills list` output with a regex such as `([0-9a-f-]{36})\W+(\w+)`.
+
+**Steps:**
+
+- [ ] **Step 1 (test writer): Write the tests.** Write `test_skills.py` with the integration examples. Create `e2e/test_missions_cli.py` with `pytestmark = pytest.mark.e2e`, the helper `skill_ids` and the test `test_lead_journey`. In this slice, the test runs spec step 1 only. Later slices add the other steps to this test, in the spec order.
+- [ ] **Step 2: Run the new tests and see them fail.** Run `uv run pytest packages/api/tests/test_skills.py packages/api/tests/e2e/test_missions_cli.py -q`. Expected: FAIL. `/skills` gives 404.
+- [ ] **Step 3 (implementer): Add `SkillOut` and `routers/skills.py`.** Include the router in `main.py`.
+- [ ] **Step 4 (implementer): Add `commands/skills.py`.** Print a Rich table with the columns `ID`, `Name` and `Description`. Give the ID column `no_wrap=True`. Register the Typer app in `main.py` with `app.add_typer(skills.app, name="skills")`.
+- [ ] **Step 5: Run the checkpoint.** Run `.claude/hooks/verify.sh full`. Expected: exit 0, no `ERROR` line.
+
+---
+
+### Slice 3: Directors and leads create, list and show missions; crew and other orgs get no access
+
+**Files:**
+- Modify: `packages/shared/src/mc_shared/__init__.py`, `packages/api/src/mc_api/models.py:25-31`, `packages/api/src/mc_api/dependencies.py`, `packages/api/src/mc_api/main.py`, `packages/cli/src/mc_cli/main.py`, `packages/cli/src/mc_cli/client.py`
+- Create: `packages/api/src/mc_api/routers/missions.py`, `packages/cli/src/mc_cli/commands/missions.py`
+- Test (test writer): `packages/api/tests/test_missions.py`, `packages/cli/tests/test_client_errors.py`, `packages/api/tests/e2e/test_missions_cli.py`
+
+**Covers:** AC2, AC3, AC4 (create), AC5, AC6, AC13, AC14 (GET), AC16 (`create`, `list`, `show`), AC17 (422)
+
+**Tests must prove:** A director or a lead creates a DRAFT mission that they lead. The flag follows the current role of the lead. The list and the show return only missions of the own org. Show returns only active slots in position order. Crew get 403 on each mission route. Another org gives 404. Examples:
+- integration: a lead of org A sends `POST /missions {"title": "T", "start_date": "2027-03-01", "end_date": "2027-03-10"}` → 201. `status == "DRAFT"`, `lead_id == <lead id>`, `lead_username == <lead username>`, `requires_additional_director is false`, `slots == []`, `description is null`.
+- integration: a director of org A sends the same request → 201. `requires_additional_director is true`.
+- integration: create as a lead. Set the lead's role to `DIRECTOR` in the session and flush. `GET /missions/{id}` → `requires_additional_director is true`.
+- integration: `end_date` one day before `start_date` → 422. `"title": ""` → 422 (Review Focus 2). A missing `title` → 422.
+- integration: org A has missions with start dates 2027-01-01 and 2027-02-01, and org B has one mission. `GET /missions` as the lead of org A → 200. The body has 2 items, the 2027-02-01 mission first. Each item has `id`, `title`, `status`, `start_date`, `end_date`, `lead_username` and `requires_additional_director`.
+- integration: a mission of org A with 3 `MissionRequirement` rows that the test adds in the session: position 2 (skill `Geology`, level 2), position 1 (skill `EVA`, level 3), and position 3 with `archived_at` set. `GET /missions/{id}` → `slots` has 2 items in position order 1, 2. Each item has `id`, `position`, `skill_id`, `skill_name` and `min_level`. The archived slot is not in the list.
+- integration: a crew member of org A sends `POST /missions`, `GET /missions`, `GET /missions/<own org mission>`, and `GET /missions/<org B mission>` → 403 each. Each body equals `{"role": "CREW", "rule": "Only directors and leads manage and view missions"}`.
+- integration: the director and the lead of org A each send `GET /missions/<org B mission>` → 404. The body equals the body of `GET /missions/<uuid4()>`, which is `{"detail": "Not found"}`.
+- integration (Review Focus 3): `GET /missions/not-a-uuid` as a lead → 422.
+- unit: `mc_api.models.MissionStatus is mc_shared.MissionStatus` → true. The `alembic check` test still passes.
+- unit: `error_message(<response 422, body {"detail": [{"loc": ["body", "start_date"], "msg": "Input should be a valid date", "type": "date_from_datetime_parsing"}]}>)` → contains `start_date: Input should be a valid date`.
+- unit: `error_message(<response 422, body {"detail": "Unknown skill: abc"}>)` → contains `Unknown skill: abc`.
+- E2E (spec step 2): in `test_lead_journey`, `mc missions create --title "Ice Core Drill" --start 2027-03-01 --end 2027-03-10` → exit 0. The output matches `Created mission ([0-9a-f-]{36})` and contains `DRAFT`. It does not contain `additional director`.
+- E2E (spec step 6, part): `mc missions list` → exit 0. The output contains `Ice Core Drill`, `Lunar Relay Repair`, `Orbital Debris Survey` and `Mars Analogue Habitat`. `mc missions show <id>` → exit 0. The output contains `Ice Core Drill` and `leo`.
+- E2E (spec step 7): `test_other_org_sees_not_found`. Create a mission as `leo`. Then `mc login --user nick` and `mc missions show <id>` → exit 1. The output contains `Not found`.
+- E2E (spec step 8): `test_crew_is_forbidden`. `mc login --user ava`, then `mc missions list` → exit 1. The output contains `CREW` and `Only directors and leads manage and view missions`.
+- E2E (spec step 9): `test_director_mission_needs_additional_director`. `mc login --user diana`, then `mc missions create --title "Deep Field Survey" --start 2027-04-01 --end 2027-04-05` → exit 0. The output contains `This mission needs an additional director for approval.`
+- E2E (Review Focus 3 and 4): `mc missions show abc` → exit 1, no `Traceback`. `mc missions create --title X --start 2027-13-01 --end 2027-12-31` → exit 1. The output contains `start_date` and no `Traceback`.
+
+**Checkpoint:** `.claude/hooks/verify.sh full` → exit 0, no `ERROR` line. `packages/api/tests/e2e/test_missions_cli.py` ran and passed.
+
+**Interfaces:**
+- Consumes: `get_current_user`, `get_scope` from slice 1. `OrgScope.get`, `OrgScope.select`, `Forbidden` from Step 3. `Mission`, `MissionRequirement`, `AppUser`, `Skill` from `mc_api.models`. `request` from `mc_cli.client`.
+- Produces:
+
+  ```python
+  # mc_shared
+  class MissionStatus(StrEnum): DRAFT; APPROVAL_REQUIRED; APPROVED; ACTIVE; COMPLETED; CANCELLED
+  class MissionCreate(BaseModel):
+      title: str = Field(min_length=1); description: str | None = None
+      start_date: date; end_date: date          # model validator: end_date >= start_date
+  class SlotOut(BaseModel): id: UUID; position: int; skill_id: UUID; skill_name: str; min_level: int
+  class MissionOut(BaseModel):
+      id: UUID; title: str; description: str | None; status: MissionStatus
+      start_date: date; end_date: date; lead_id: UUID; lead_username: str
+      requires_additional_director: bool; slots: list[SlotOut]
+  class MissionSummary(BaseModel):
+      id: UUID; title: str; status: MissionStatus; start_date: date; end_date: date
+      lead_username: str; requires_additional_director: bool
+
+  # mc_api.dependencies
+  def require_roles(*roles: UserRole, rule: str) -> Callable[..., None]
+      # A dependency. It raises Forbidden(user.role, rule) if user.role is not in roles.
+
+  # mc_api.routers.missions
+  router = APIRouter(
+      prefix="/missions", tags=["missions"],
+      dependencies=[Depends(require_roles(UserRole.DIRECTOR, UserRole.LEAD,
+                                          rule="Only directors and leads manage and view missions"))],
+  )
+  def mission_out(scope: OrgScope, mission: Mission) -> MissionOut   # loads the lead and the active slots
+  # POST /missions (201) -> MissionOut; GET /missions -> list[MissionSummary]; GET /missions/{mission_id} -> MissionOut
+
+  # mc_cli.commands.missions
+  app = typer.Typer()        # registered in mc_cli.main as "missions"
+  def print_mission(m: MissionOut) -> None
+  ```
+
+  `print_mission` prints these items in this order:
+  1. `Mission <id>`
+  2. The title
+  3. The status
+  4. `<start> to <end>`
+  5. The lead username
+  6. If the flag is true, the line `This mission needs an additional director for approval.`
+  7. A slot table with the columns `Slot`, `Skill`, `Min level`. A slot row has the position and the skill name on the same line.
+
+  `create` prints `Created mission <id>` and then the mission. `list` prints a table with `ID`, `Title`, `Status`, `Start`, `End`, `Lead`. Give each ID column `no_wrap=True`.
+
+**Steps:**
+
+- [ ] **Step 1 (test writer): Write the tests.** Write `test_missions.py`. Add the 422 cases to `test_client_errors.py`. In `test_missions_cli.py`, add spec steps 2 and 6 to `test_lead_journey`. Add the other E2E tests above.
+- [ ] **Step 2: Run the new tests and see them fail.** Run `uv run pytest packages/api/tests/test_missions.py packages/cli/tests packages/api/tests/e2e/test_missions_cli.py -q`. Expected: FAIL. `/missions` gives 404.
+- [ ] **Step 3 (implementer): Move `MissionStatus`.** Define it in `mc_shared`. In `models.py`, delete the class and import it from `mc_shared`. The DB enum name stays `mission_status`. `seed.py` and `test_schema.py` import it from `mc_api.models`, and that import still works. Run `uv run pytest packages/api/tests/test_migration.py packages/api/tests/test_schema.py -q`. Expected: PASS.
+- [ ] **Step 4 (implementer): Add the shared types and `require_roles`.**
+- [ ] **Step 5 (implementer): Write `routers/missions.py` with create, list and show.**
+  - Create: set `org_id` and `lead_id` from the caller, and `status = DRAFT`. Commit, then return `mission_out`.
+  - List: use `scope.select(Mission)`, ordered by `start_date` descending.
+  - Show: use `scope.get(Mission, mission_id)`.
+  - `mission_out` loads the lead with `scope.get(AppUser, mission.lead_id)`. It loads the slots with `archived_at IS NULL`, joined to `Skill` for the name, ordered by `position`.
+  - Include the router in `main.py`.
+- [ ] **Step 6 (implementer): Extend `error_message`.** For 422 with a list `detail`, return one line `<last loc item>: <msg>` for each item. For 422 or 409 with a text `detail`, return the text.
+- [ ] **Step 7 (implementer): Write `commands/missions.py`** with `create`, `list` and `show`. `create` takes `--title`, `--start`, `--end` and an optional `--description`. Send the dates as text, so the API checks them. Register the Typer app in `main.py` as `missions`.
+- [ ] **Step 8: Run the checkpoint.** Run `.claude/hooks/verify.sh full`. Expected: exit 0, no `ERROR` line.
+
+---
+
+### Slice 4: The lead edits their own mission in DRAFT
+
+**Files:**
+- Modify: `packages/shared/src/mc_shared/__init__.py`, `packages/api/src/mc_api/scope.py`, `packages/api/src/mc_api/routers/missions.py`, `packages/cli/src/mc_cli/commands/missions.py`
+- Test (test writer): `packages/api/tests/test_mission_edit.py`, `packages/api/tests/test_scope.py`, `packages/cli/tests/test_client_errors.py`, `packages/api/tests/e2e/test_missions_cli.py`
+
+**Covers:** AC4 (edit), AC7, AC8 (PATCH), AC9 (PATCH), AC14 (PATCH), AC16 (`edit`), AC17 (409)
+
+**Tests must prove:** The lead of the mission changes only the fields that the request gives. Another director or lead of the own org gets 403. A status other than DRAFT gives 409. Another org gives 404 and the mission does not change. The merged dates must be valid. Examples:
+- integration: a lead's DRAFT mission. `PATCH {"title": "New"}` → 200. `title == "New"`. Description and dates do not change.
+- integration: `PATCH {"start_date": "2027-03-05"}` on a mission with end `2027-03-10` → 200. `PATCH {"start_date": "2027-03-11"}` → 422. The stored start date is still `2027-03-05`.
+- integration (Review Focus 1): `PATCH {}` → 200, no change. `PATCH {"title": null}` → 200, the title does not change.
+- integration: another lead of the own org, and a director of the own org, each send `PATCH {"title": "X"}` → 403. The body equals `{"role": "<their role>", "rule": "Directors and leads edit only their own missions"}`.
+- integration: set the status to each of `APPROVAL_REQUIRED`, `APPROVED`, `ACTIVE`, `COMPLETED` and `CANCELLED`, then `PATCH {"title": "X"}` as the owner → 409. The body equals `{"detail": "Mission is <STATUS>. Edits are allowed only in DRAFT."}`.
+- integration: the director and the lead of org A each send `PATCH /missions/<org B mission> {"title": "X"}` → 404 with `{"detail": "Not found"}`. The title of the org B mission does not change.
+- integration: a crew member sends `PATCH` → 403 with the crew body.
+- integration: `OrgScope(session, A.id).get(Mission, <A mission id>, for_update=True)` → the mission. `.get(Mission, <B mission id>, for_update=True)` → raises `HTTPException` with status 404.
+- unit: `error_message(<response 409, body {"detail": "Mission is APPROVED. Edits are allowed only in DRAFT."}>)` → contains the detail.
+- E2E (spec step 5): in `test_lead_journey`, after step 4, `mc missions edit <id> --title "Ice Core Drill II"` → exit 0. The output contains `Ice Core Drill II`. Step 6 now checks the new title in `show`.
+
+**Checkpoint:** `.claude/hooks/verify.sh full` → exit 0, no `ERROR` line. `packages/api/tests/e2e/test_missions_cli.py` ran and passed.
+
+**Interfaces:**
+- Consumes: `mission_out`, `print_mission`, `Forbidden` and the mission router from slice 3.
+- Produces:
+
+  ```python
+  # mc_shared
+  class MissionUpdate(BaseModel):
+      title: str | None = Field(default=None, min_length=1); description: str | None = None
+      start_date: date | None = None; end_date: date | None = None
+
+  # mc_api.scope
+  def get(self, model: type[T], id: UUID, *, for_update: bool = False) -> T   # SELECT ... FOR UPDATE when true
+
+  # mc_api.routers.missions
+  def editable_mission(scope: OrgScope, user: AppUser, mission_id: UUID) -> Mission
+      # 1. scope.get(Mission, mission_id, for_update=True)  -> 404
+      # 2. mission.lead_id != user.id -> Forbidden(user.role, "Directors and leads edit only their own missions")
+      # 3. mission.status != DRAFT -> HTTPException(409, f"Mission is {status}. Edits are allowed only in DRAFT.")
+  # PATCH /missions/{mission_id} -> MissionOut
+  ```
+
+  Slice 5 uses `editable_mission` for both slot routes. Step 6 can use it for submit.
+
+**Steps:**
+
+- [ ] **Step 1 (test writer): Write the tests.** Write `test_mission_edit.py`. Add the `for_update` cases to `test_scope.py` and the 409 case to `test_client_errors.py`. Add spec step 5 to `test_lead_journey`.
+- [ ] **Step 2: Run the new tests and see them fail.** Run `uv run pytest packages/api/tests/test_mission_edit.py packages/api/tests/test_scope.py packages/cli/tests -q`. Expected: FAIL. PATCH gives 405.
+- [ ] **Step 3 (implementer): Add `for_update` to `OrgScope.get`.**
+- [ ] **Step 4 (implementer): Add `editable_mission` and `PATCH /missions/{mission_id}`.**
+  - Apply `body.model_dump(exclude_none=True)`, so a null field changes nothing.
+  - Check `end_date >= start_date` on the merged values. Raise 422 with a text `detail` if the check fails.
+  - Commit, then return `mission_out`.
+- [ ] **Step 5 (implementer): Add `mc missions edit <mission-id>`** with the optional `--title`, `--description`, `--start` and `--end`. Send only the given options. Print the mission.
+- [ ] **Step 6: Run the checkpoint.** Run `.claude/hooks/verify.sh full`. Expected: exit 0, no `ERROR` line.
+
+---
+
+### Slice 5: The lead adds and removes slots of their own DRAFT mission
+
+**Files:**
+- Modify: `packages/shared/src/mc_shared/__init__.py`, `packages/api/src/mc_api/routers/missions.py`, `packages/cli/src/mc_cli/commands/missions.py`
+- Test (test writer): `packages/api/tests/test_mission_slots.py`, `packages/api/tests/e2e/test_missions_cli.py`
+
+**Covers:** AC8 (slots), AC9 (slots), AC10, AC11, AC12, AC14 (slots), AC16 (`slots add`, `slots remove`)
+
+**Tests must prove:** A new slot gets the lowest free active position. A remove archives the row and frees its position. A skill of another org gives 422. The owner, DRAFT and cross-org rules of PATCH apply to both slot routes. Examples:
+- integration: a lead's DRAFT mission and skills `S1` and `S2` of the own org. `POST /missions/{id}/slots {"skill_id": S1, "min_level": 3}` → 201. `slots == [{position 1, S1, level 3}]`. A second add with `S2` → position 2.
+- integration: 3 slots. `DELETE /missions/{id}/slots/2` → 200. `slots` has positions 1 and 3. The removed row still exists in the session with `archived_at` not null. The next add → position 2.
+- integration: `min_level` 0 and 6 → 422 each.
+- integration: `skill_id` of a skill of org B → 422 with `{"detail": "Unknown skill: <id>"}`. `skill_id = uuid4()` → 422 with `{"detail": "Unknown skill: <that id>"}`.
+- integration (Review Focus 5): `DELETE /missions/{id}/slots/7` with no slot 7 → 404. `/slots/0` → 404. `/slots/abc` → 422.
+- integration: another lead and a director of the own org, on add and on remove → 403 with the non-owner body.
+- integration: the status is `APPROVED`. Add and remove as the owner → 409 each, with the 409 body. No slot row changes.
+- integration: the director and the lead of org A, on add and remove for an org B mission → 404 each. The org B slots do not change.
+- integration: a crew member on add and remove → 403 with the crew body.
+- E2E (spec steps 3 and 4): in `test_lead_journey`, after step 2, use the IDs from `skill_ids`:
+  - `mc missions slots add <id> --skill <Piloting id> --level 3`, then the same with `<Geology id> --level 2` → exit 0 each. The output has a row with `1` and `Piloting` and a row with `2` and `Geology`.
+  - `mc missions slots remove <id> 1`, then `mc missions slots add <id> --skill <EVA id> --level 3` → exit 0 each. The output has a row with `1` and `EVA` and a row with `2` and `Geology`.
+  - Step 6 `show` then contains `EVA` and `Geology`.
+
+**Checkpoint:** `.claude/hooks/verify.sh full` → exit 0, no `ERROR` line. `packages/api/tests/e2e/test_missions_cli.py` ran and passed with all 9 spec steps.
+
+**Interfaces:**
+- Consumes: `editable_mission`, `mission_out`, `print_mission`, `OrgScope.get` and `OrgScope.select`.
+- Produces:
+
+  ```python
+  # mc_shared
+  class SlotCreate(BaseModel): skill_id: UUID; min_level: int = Field(ge=1, le=5)
+
+  # mc_api.routers.missions
+  # POST   /missions/{mission_id}/slots (201)        -> MissionOut
+  # DELETE /missions/{mission_id}/slots/{position}   -> MissionOut   (position: int)
+
+  # mc_cli.commands.missions
+  slots = typer.Typer()      # added to missions app as "slots"; commands "add" and "remove"
+  ```
+
+**Steps:**
+
+- [ ] **Step 1 (test writer): Write the tests.** Write `test_mission_slots.py`. Add spec steps 3 and 4 to `test_lead_journey`. Add the slot checks to step 6.
+- [ ] **Step 2: Run the new tests and see them fail.** Run `uv run pytest packages/api/tests/test_mission_slots.py packages/api/tests/e2e/test_missions_cli.py -q`. Expected: FAIL. The slot routes give 404 or 405.
+- [ ] **Step 3 (implementer): Add `POST /missions/{mission_id}/slots`.**
+  - Call `editable_mission` first.
+  - Look up the skill with `scope.select(Skill)` and the ID. Do not use `scope.get`, because a missing skill must give 422, not 404.
+  - The position is the lowest positive integer that no active slot of the mission uses. The mission row lock serializes this choice.
+  - Commit, then return `mission_out` with status 201.
+- [ ] **Step 4 (implementer): Add `DELETE /missions/{mission_id}/slots/{position}`.**
+  - Call `editable_mission` first.
+  - Find the active slot at the position with `scope.select(MissionRequirement)`. No slot gives 404 `{"detail": "Not found"}`.
+  - Set `archived_at` to the current time. Do not delete the row.
+  - Commit, then return `mission_out`.
+- [ ] **Step 5 (implementer): Add the CLI commands.**
+  - Add `mc missions slots add <mission-id> --skill <skill-id> --level <n>`.
+  - Add `mc missions slots remove <mission-id> <position>`.
+  - Each command prints the mission.
+- [ ] **Step 6: Run the checkpoint.** Run `.claude/hooks/verify.sh full`. Expected: exit 0, no `ERROR` line. Run `uv run pytest -q` a second time. Expected: PASS.

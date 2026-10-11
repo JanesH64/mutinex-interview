@@ -1,0 +1,325 @@
+# Mission Approval Implementation Plan
+
+> Run with /implement-plan /Users/janeshorst/Dev/mutinex-interview/.work/mission-approval/plan.md in a fresh context.
+
+**Goal:** Add submit, withdraw, approve and reject for missions in the API and the CLI. A director who does not lead the mission approves or rejects it, and sees the matcher preview in `mc missions show`.
+
+**Architecture:** The missions router gets one transition table `action -> (from, to)` and four POST routes. Each route locks the mission, checks the actor, checks the status and sets the new status. The step 5 match route loads its data inside the handler. This plan moves that load into one function, `build_preview`, which the match route and `mission_out` both call. `MissionOut` adds the approver and the preview. The CLI adds four commands, and `print_mission` prints the approver and the preview table.
+
+**Tech Stack:** Python 3.12, FastAPI, Pydantic 2, SQLAlchemy 2, Typer, httpx, Rich, pytest, Postgres.
+
+**Spec:** /Users/janeshorst/Dev/mutinex-interview/.work/mission-approval/spec.md
+**Verify:** verify:full = `.claude/hooks/verify.sh full`; verify:fast = `.claude/hooks/verify.sh fast`
+**Contract:** Covers, Tests must prove, Files, Interfaces, Global Constraints and Checkpoint are binding. Report each change to them to the human. The implementer chooses the code.
+
+## Global Constraints
+
+- **Precondition.** Run the plan in the main checkout `/Users/janeshorst/Dev/mutinex-interview`, on `develop`. Commit each slice directly on `develop`. Do not create a branch. This is a user override of the CLAUDE.md branch rule, the same as for step 5 (`.work/matcher-preview/progress.md`). Before slice 1, do these checks. If one fails, stop and tell the human.
+  - `git branch --show-current` prints `develop`, and `git status --short` prints nothing.
+  - Step 5 is complete: `git merge-base --is-ancestor 6ccb640 HEAD` exits 0. The step 5 commits are `a2a51e3`, `347dcb5` and `6ccb640`.
+  - `uv run pytest -q packages/api/tests/test_match_preview.py packages/api/tests/test_matcher.py` passes.
+- Do not push. `origin/develop` is behind the local `develop`. The human pushes.
+- Step 5 and step 6 use the same checkout and the same test database `mc_test`. Do not start a slice while another session changes or tests this checkout.
+- The step 5 match route keeps its rules: the mission lead only, DRAFT only, with its step 5 error bodies. All step 5 tests must still pass.
+- Do not change the schema. `alembic check` on `mc_test` must report no difference (`packages/api/tests/test_migration.py`). `approved_by` and `approved_at` exist (`packages/api/src/mc_api/models.py:128-129`).
+- Put each request and response type in `mc_shared`. It depends only on Pydantic.
+- The router reads tenant data only through `OrgScope` (`packages/api/src/mc_api/scope.py:15-38`).
+- Each transition route locks the mission row: `scope.get(Mission, mission_id, for_update=True)`. The mission view takes no lock and writes no rows.
+- Check order on each transition route: crew 403 (router dependency, `routers/missions.py:38-51`), then 404, then actor 403, then status 409. The actor check runs after the mission load, so a user of another org always gets 404.
+- Exact error bodies:
+  - Crew: 403 `{"role": "CREW", "rule": "Only directors and leads manage and view missions"}` (exists).
+  - Submit or withdraw by a user who does not lead the mission: 403 `{"role": "<ROLE>", "rule": "Directors and leads submit and withdraw only their own missions"}`.
+  - Approve or reject by a lead: 403 `{"role": "LEAD", "rule": "Only directors approve or reject missions"}`. This check runs before the own-mission check.
+  - Approve or reject by the director who leads the mission: 403 `{"role": "DIRECTOR", "rule": "A mission lead never approves or rejects their own mission"}`.
+  - Wrong status: 409 `{"detail": "Mission is <STATUS>. <Action> is allowed only in <FROM>."}`. `<Action>` is `Submit`, `Withdraw`, `Approve` or `Reject`.
+  - Missing ID or another org: 404 `{"detail": "Not found"}` (exists).
+- Log each 200 transition and each 409 at info level with `logging.getLogger(__name__)`. Put the mission ID in each message. `Forbidden` and `OrgScope.get` already log the 403 and the 404. Never log a token.
+- New `MissionOut` fields have the default `None`. `packages/cli/tests/test_skills_output.py:29-40` builds a `MissionOut` body without them.
+- Withdraw from APPROVED gives 409 in this plan. Build step 8 adds it (`design/DESIGN.md:71`).
+- The CLI prints `approved_at` in UTC as `YYYY-MM-DD HH:MM UTC`.
+- Integration tests create their own orgs and users with `make_user` and the `auth` fixture (`packages/api/tests/conftest.py:68-95`). No test assumes empty tables.
+- E2E tests have the marker `e2e` and use the seed data. verify:fast excludes them. verify:full runs them. The seed loads one time for each test module (`packages/api/tests/e2e/conftest.py:17-21`), so the tests in one module share the mission states.
+- Only the test writer edits paths that match `TEST_PATTERNS` in `.claude/project.sh` (`^packages/[^/]+/tests/`). This includes each `conftest.py`.
+- Do not edit `BRIEF.md`. Do not change `README.md`.
+
+## Review Focus
+
+1. Two directors approve at the same time, or a director approves while the lead withdraws. Expected: the row lock serializes them. The second request gets 409. No automated test: the test session shares one connection (`packages/api/tests/conftest.py:45-53`). The reviewer checks that each transition route loads the mission with `for_update=True` before the status check.
+2. A mission ID that is not a UUID on a new route: `POST /missions/not-a-uuid/approve` and `mc missions approve abc`. Expected: 422 from the API. The CLI exits 1 with no traceback. Slice 1 tests it for submit. Slice 2 tests it for approve.
+3. Reject or approve with a JSON body, for example `{"comment": "too expensive"}`. Expected: 200. The API ignores the body and stores no comment. Slice 2 tests it.
+4. The view of an APPROVAL_REQUIRED mission with no slots, or in an org with no crew member. Expected: 200 with `preview.slots == []`, or each `suggestion` null. The CLI prints `0 of 0 slots filled`. The API never gives 500. Slice 3 tests it.
+5. A crew member who declined this mission earlier. Expected: the view preview never suggests this crew member, the same as the match route. This proves that the view uses the step 5 filters. Slice 3 tests it.
+
+## File structure
+
+| Path | Responsibility | Slice |
+|---|---|---|
+| `packages/api/src/mc_api/routers/missions.py` | `TRANSITIONS`, the four transition routes, `build_preview`, the new `MissionOut` fields in `mission_out` | 1, 2, 3 |
+| `packages/shared/src/mc_shared/__init__.py` | `MissionOut.approved_by_username`, `approved_at`, `preview` | 2, 3 |
+| `packages/cli/src/mc_cli/commands/missions.py` | `submit`, `withdraw`, `approve`, `reject` commands, `print_preview`, approver and preview in `print_mission` | 1, 2, 3 |
+| `design/DESIGN.md` | Transition rule in "Mission states" → "Rules", "Changes" row | 1 |
+| `packages/api/tests/test_mission_approval.py` (test writer, new) | Integration tests of the four routes | 1, 2 |
+| `packages/api/tests/test_approval_view.py` (test writer, new) | Integration tests of the approver fields and the preview in the view | 2, 3 |
+| `packages/cli/tests/test_approval_output.py` (test writer, new) | CLI output of the approver line and the preview in `show` | 2, 3 |
+| `packages/api/tests/e2e/test_approval_cli.py` (test writer, new) | The spec "End-to-end check" | 1, 2, 3 |
+
+---
+
+### Slice 1: The lead submits and withdraws an own mission
+
+**Files:**
+- Modify: `packages/api/src/mc_api/routers/missions.py`, `packages/cli/src/mc_cli/commands/missions.py`, `design/DESIGN.md` ("Mission states" → "Rules", and the "Changes" table)
+- Test (test writer): `packages/api/tests/test_mission_approval.py`, `packages/api/tests/e2e/test_approval_cli.py`
+
+**Covers:** AC1, AC2, AC3, AC8 (submit, withdraw), AC9 (first example), AC10 (submit, withdraw), AC11 (submit, withdraw), AC12, AC16 (submit, withdraw), AC17 (submit, withdraw), AC19
+
+**Tests must prove:** The mission lead moves a DRAFT mission to APPROVAL_REQUIRED and back. Nobody else can. Each wrong status gives 409. The details are final in APPROVAL_REQUIRED. Examples:
+- integration (AC1): a lead submits an own DRAFT mission with one slot → 200, `status` `APPROVAL_REQUIRED`. A director submits an own DRAFT mission with no slot → 200, `APPROVAL_REQUIRED`.
+- integration (AC2): the lead withdraws the APPROVAL_REQUIRED mission → 200, `status` `DRAFT`, `approved_by_username` and `approved_at` absent or `null`. Then `PATCH` with a new title → 200.
+- integration (AC3): another lead and a director of the same org each submit the DRAFT mission → 403 `{"role": "<ROLE>", "rule": "Directors and leads submit and withdraw only their own missions"}`. The same for withdraw of an APPROVAL_REQUIRED mission. `GET` shows the status unchanged.
+- integration (AC8): submit in each of APPROVAL_REQUIRED, APPROVED, ACTIVE, COMPLETED, CANCELLED → 409, for example `{"detail": "Mission is APPROVED. Submit is allowed only in DRAFT."}`. Withdraw in each of DRAFT, APPROVED, ACTIVE, COMPLETED, CANCELLED → 409, for example `{"detail": "Mission is APPROVED. Withdraw is allowed only in APPROVAL_REQUIRED."}`. The status does not change.
+- integration (AC9): a lead who does not lead a COMPLETED mission submits it → 403, not 409.
+- integration (AC10): a crew member submits and withdraws → 403 `{"role": "CREW", "rule": "Only directors and leads manage and view missions"}`.
+- integration (AC11): a director and a lead of org B each submit and withdraw a mission of org A → 404 `{"detail": "Not found"}`, the same body as for `uuid4()`. The org A status does not change.
+- integration (AC12): in APPROVAL_REQUIRED, the lead sends `PATCH`, a slot add and a slot remove → 409 each.
+- integration (AC16): with `caplog` at INFO, a submit, a withdraw and a 409 submit each add one record of the logger `mc_api.routers.missions` that contains the mission ID. No record contains the bearer token.
+- integration (Review Focus 2): `POST /missions/not-a-uuid/submit` as a lead → 422.
+- E2E (spec step 6): as `leo`, `mc missions create --title "Approval Check" --start 2027-05-01 --end 2027-05-05`, `mc missions submit <id>` → exit 0, output has `APPROVAL_REQUIRED`. `mc missions withdraw <id>` → exit 0, output has `DRAFT`.
+- E2E (spec step 7): as `leo`, `mc missions withdraw <id of "Mars Analogue Habitat">` → exit 1, output has `Mission is APPROVED. Withdraw is allowed only in APPROVAL_REQUIRED.`
+- E2E (spec step 9): as `ava`, `mc missions submit <id of "Polar Ice Survey">` → exit 1, output has `CREW` and `Only directors and leads manage and view missions`.
+- E2E (Review Focus 2): as `leo`, `mc missions submit abc` → exit 1, output has no `Traceback`.
+
+**Checkpoint:** `.claude/hooks/verify.sh full` → exit 0, no `ERROR` line. `packages/api/tests/e2e/test_approval_cli.py` ran and passed.
+
+**Interfaces:**
+- Consumes: `OrgScope.get(..., for_update=True)`, `Forbidden`, `get_current_user`, `get_scope`, `mission_out` (`routers/missions.py:55-92`) and `editable_mission` (`routers/missions.py:139-148`). `request` and `print_mission` (`commands/missions.py:14-25`) in `mc_cli`.
+- Produces:
+
+  ```python
+  # mc_api.routers.missions
+  TRANSITIONS: dict[str, tuple[MissionStatus, MissionStatus]] = {
+      "submit": (MissionStatus.DRAFT, MissionStatus.APPROVAL_REQUIRED),
+      "withdraw": (MissionStatus.APPROVAL_REQUIRED, MissionStatus.DRAFT),
+      "approve": (MissionStatus.APPROVAL_REQUIRED, MissionStatus.APPROVED),
+      "reject": (MissionStatus.APPROVAL_REQUIRED, MissionStatus.DRAFT),
+  }
+  # POST /missions/{mission_id}/submit   -> 200 MissionOut
+  # POST /missions/{mission_id}/withdraw -> 200 MissionOut
+  # mc_cli.commands.missions: `submit` and `withdraw` commands, argument MISSION_ID
+  ```
+
+  Slice 1 can add only the `submit` and `withdraw` keys. Slice 2 adds `approve` and `reject`. The 409 text takes `<FROM>` from the table and `<Action>` from the key with a capital first letter.
+
+**Steps:**
+
+- [ ] **Step 1 (test writer): Write the tests.** Write `test_mission_approval.py` with the integration examples. Write `e2e/test_approval_cli.py` with the E2E examples. Mark the E2E module with `pytestmark = pytest.mark.e2e`. Use the `auth` fixture from `conftest.py`, `make_mission` from `test_missions.py`, and `make_skill` and `add_slot` from `test_mission_slots.py`, as the step 4 tests do.
+- [ ] **Step 2: Run the new tests and see them fail.** Run `uv run pytest packages/api/tests/test_mission_approval.py -q`. Expected: FAIL. The submit route gives 404 or 405.
+- [ ] **Step 3 (implementer): Add `TRANSITIONS` and one shared transition helper** in `routers/missions.py`. The helper loads the mission with the row lock, runs the actor check of the route, checks `mission.status` against the `from` status of the action, sets the `to` status, commits, logs and returns `mission_out`. On a wrong status, it logs and raises the 409 with the exact body.
+- [ ] **Step 4 (implementer): Add `POST /missions/{mission_id}/submit` and `/withdraw`.** The actor check: if `mission.lead_id != user.id`, raise `Forbidden(user.role, "Directors and leads submit and withdraw only their own missions")`.
+- [ ] **Step 5 (implementer): Add `mc missions submit` and `mc missions withdraw`.** Each sends `POST /missions/{quote(mission_id, safe='')}/<action>` with `request` and prints the result with `print_mission`, as `edit` does (`commands/missions.py:85-97`).
+- [ ] **Step 6 (implementer): Update `design/DESIGN.md`.** In "Mission states" → "Rules", replace the line "The code holds the allowed transitions as `(from, to) -> allowed roles`. ..." with: "The code holds the allowed transitions as `action -> (from, to)`. The route of each action checks the actor. This is the extension point for approval workflow customization (P2)." Add a row to the "Changes" table: date `2026-10-11`, change "Key the transition table by action", reason "Withdraw and reject both go from APPROVAL_REQUIRED to DRAFT, with different actors."
+- [ ] **Step 7: Run the checkpoint.** Run `.claude/hooks/verify.sh full`. Expected: exit 0, no `ERROR` line.
+
+---
+
+### Slice 2: A director approves or rejects the mission of another lead, and show prints the approver
+
+**Files:**
+- Modify: `packages/api/src/mc_api/routers/missions.py`, `packages/shared/src/mc_shared/__init__.py`, `packages/cli/src/mc_cli/commands/missions.py`
+- Test (test writer): `packages/api/tests/test_mission_approval.py`, `packages/api/tests/test_approval_view.py`, `packages/cli/tests/test_approval_output.py`, `packages/api/tests/e2e/test_approval_cli.py`
+
+**Covers:** AC2 (approver fields), AC4, AC5, AC6, AC7, AC8 (approve, reject), AC9 (second example), AC10 (approve, reject), AC11 (approve, reject), AC13, AC16 (approve, reject), AC17 (approve, reject), AC18 (approver line)
+
+**Tests must prove:** Only a director who does not lead the mission approves or rejects it. Approve stores the approver and the time. Reject returns the mission to DRAFT. The view and the CLI show the approver. Examples:
+- integration (AC4): director D2 approves an APPROVAL_REQUIRED mission of lead L → 200, `status` `APPROVED`, `approved_by_username` = D2's username, `t0 <= approved_at <= t1` (times before and after the request). Director D2 approves a mission that director D1 leads → 200, `approved_by_username` = D2.
+- integration (AC5): D2 rejects with no body → 200, `status` `DRAFT`, `approved_by_username` and `approved_at` `null`. Then L sends `PATCH` → 200, and L submits → 200.
+- integration (AC2, fields): L submits, then withdraws → 200, `approved_by_username` and `approved_at` `null`.
+- integration (AC6): lead L2 approves and rejects L's mission → 403 `{"role": "LEAD", "rule": "Only directors approve or reject missions"}`. L approves an own mission → the same 403. The status stays `APPROVAL_REQUIRED`.
+- integration (AC7): D1 approves and rejects an own APPROVAL_REQUIRED mission → 403 `{"role": "DIRECTOR", "rule": "A mission lead never approves or rejects their own mission"}`. The status stays `APPROVAL_REQUIRED`.
+- integration (AC8): approve and reject in each of DRAFT, APPROVED, ACTIVE, COMPLETED, CANCELLED by D2 → 409, for example `{"detail": "Mission is DRAFT. Approve is allowed only in APPROVAL_REQUIRED."}` and `{"detail": "Mission is APPROVED. Reject is allowed only in APPROVAL_REQUIRED."}`. The status does not change.
+- integration (AC9): a lead of org B approves a DRAFT mission of org A → 404, not 403.
+- integration (AC10): a crew member approves and rejects → 403 `{"role": "CREW", "rule": "Only directors and leads manage and view missions"}`.
+- integration (AC11): a director and a lead of org B each approve and reject an APPROVAL_REQUIRED mission of org A → 404, the same body as for `uuid4()`. The org A status stays `APPROVAL_REQUIRED`, and `approved_by` stays null.
+- integration (AC13): a mission with `approved_by` = D2 and `approved_at` = 2026-10-01 09:00 UTC → `GET` gives `approved_by_username` = D2's username and that `approved_at`. A new DRAFT mission → both `null`.
+- integration (AC16): with `caplog` at INFO, an approve, a reject and a 409 approve each add one record of the logger `mc_api.routers.missions` that contains the mission ID.
+- integration (Review Focus 2): `POST /missions/not-a-uuid/approve` as a director → 422.
+- integration (Review Focus 3): D2 rejects with the body `{"comment": "too expensive"}` → 200, `status` `DRAFT`.
+- unit (CLI, AC18): monkeypatch `mc_cli.commands.missions.request` (as `packages/cli/tests/test_skills_output.py:26-45` does) to return a `MissionOut` body with `status` `APPROVED`, `approved_by_username` `dmitri`, `approved_at` `2026-10-01T19:00:00+10:00`. `mc missions show <id>` → exit 0, output has `Approved by dmitri at 2026-10-01 09:00 UTC`. A body without the approver fields → no `Approved by` line.
+- E2E (spec steps 1, 2, 4, 5, 8), one journey test in file order:
+  - `leo`: `mc missions submit <id of "Polar Ice Survey">` → exit 0, `APPROVAL_REQUIRED`.
+  - `leo`: `mc missions approve <id>` → exit 1, output has `LEAD` and `Only directors approve or reject missions`.
+  - `diana`: `mc missions reject <id>` → exit 0, `DRAFT`. `leo`: `mc missions submit <id>` → exit 0. `diana`: `mc missions approve <id>` → exit 0, output has `APPROVED` and `Approved by diana at`.
+  - `diana`: `mc missions create --title "Deep Field Survey" --start 2027-04-01 --end 2027-04-05`, `submit` → exit 0. `diana`: `approve` → exit 1, output has `DIRECTOR` and `A mission lead never approves or rejects their own mission`. `dmitri`: `approve` → exit 0, output has `Approved by dmitri at`.
+  - `nick`: `mc missions approve <id of "Polar Ice Survey">` → exit 1, output has `Not found`.
+- E2E (Review Focus 2): as `diana`, `mc missions approve abc` → exit 1, output has no `Traceback`.
+
+**Checkpoint:** `.claude/hooks/verify.sh full` → exit 0, no `ERROR` line. `packages/api/tests/e2e/test_approval_cli.py` ran and passed.
+
+**Interfaces:**
+- Consumes: `TRANSITIONS` and the transition helper of slice 1.
+- Produces:
+
+  ```python
+  # mc_shared.MissionOut, new fields
+  approved_by_username: str | None = None
+  approved_at: datetime | None = None
+
+  # POST /missions/{mission_id}/approve -> 200 MissionOut
+  # POST /missions/{mission_id}/reject  -> 200 MissionOut
+  # mc_cli.commands.missions: `approve` and `reject` commands, argument MISSION_ID
+  ```
+
+**Steps:**
+
+- [ ] **Step 1 (test writer): Write the tests.** Add the integration examples to `test_mission_approval.py`. Write `test_approval_view.py` with the AC13 examples. Write `packages/cli/tests/test_approval_output.py` with the CLI unit examples. Add the journey test and the Review Focus 2 check to `e2e/test_approval_cli.py`.
+- [ ] **Step 2: Run the new tests and see them fail.** Run `uv run pytest packages/api/tests/test_mission_approval.py packages/api/tests/test_approval_view.py packages/cli/tests/test_approval_output.py -q`. Expected: FAIL. The approve route does not exist, and `MissionOut` has no `approved_by_username`.
+- [ ] **Step 3 (implementer): Add the `MissionOut` fields** in `mc_shared`, with the default `None`.
+- [ ] **Step 4 (implementer): Fill the fields in `mission_out`.** Load the approver with `scope.get(AppUser, mission.approved_by)` when `approved_by` is set.
+- [ ] **Step 5 (implementer): Add `POST /missions/{mission_id}/approve` and `/reject`** with the slice 1 helper. The actor check: if `user.role != DIRECTOR`, raise `Forbidden(user.role, "Only directors approve or reject missions")`. Then, if `mission.lead_id == user.id`, raise `Forbidden(user.role, "A mission lead never approves or rejects their own mission")`. Approve sets `approved_by = user.id` and `approved_at = datetime.now(UTC)`. Reject leaves both null. Neither route reads a body.
+- [ ] **Step 6 (implementer): Add `mc missions approve` and `mc missions reject`**, as the slice 1 commands do.
+- [ ] **Step 7 (implementer): Print the approver in `print_mission`.** When `approved_by_username` is set, print `Approved by <username> at <approved_at in UTC as YYYY-MM-DD HH:MM> UTC`.
+- [ ] **Step 8: Run the checkpoint.** Run `.claude/hooks/verify.sh full`. Expected: exit 0, no `ERROR` line.
+
+---
+
+### Slice 3: The director sees the matcher preview in the mission view before approval
+
+**Files:**
+- Modify: `packages/api/src/mc_api/routers/missions.py`, `packages/shared/src/mc_shared/__init__.py`, `packages/cli/src/mc_cli/commands/missions.py`
+- Test (test writer): `packages/api/tests/test_approval_view.py`, `packages/cli/tests/test_approval_output.py`, `packages/api/tests/e2e/test_approval_cli.py`
+
+**Covers:** AC14, AC15, AC18 (preview)
+
+**Tests must prove:** In APPROVAL_REQUIRED, the mission view has the same preview as the match route gives in DRAFT, for each director and lead. Other statuses have no preview. The match route keeps its rules. Examples:
+- integration (AC14): lead L has a DRAFT mission with slots EVA ≥ 3 and Robotics ≥ 3, and the org has crew members who fill them. `GET /missions/{id}/match` as L → body A. L submits. `GET /missions/{id}` as director D2 → `preview` == A. As lead L2 → `preview` == A. The row counts of all tables do not change after the `GET` calls.
+- integration (AC14): `preview` is `null` in DRAFT, APPROVED, ACTIVE, COMPLETED and CANCELLED.
+- integration (AC15): in APPROVAL_REQUIRED, `GET /missions/{id}/match` as L → 409 `{"detail": "Mission is APPROVAL_REQUIRED. The matcher preview is allowed only in DRAFT."}`. As D2 → 403 `{"role": "DIRECTOR", "rule": "Directors and leads run the matcher only on their own missions"}`.
+- integration (Review Focus 4): an APPROVAL_REQUIRED mission with no slots → 200, `preview.slots == []`. An APPROVAL_REQUIRED mission with one slot in an org with no crew member → 200, the slot `suggestion` is `null`.
+- integration (Review Focus 5): crew member C is the only candidate for the slot and has a DECLINED assignment on this mission. The mission is APPROVAL_REQUIRED → the slot `suggestion` is `null`.
+- unit (CLI, AC18): monkeypatch `request` to return a `MissionOut` body with `status` `APPROVAL_REQUIRED` and a `preview` with slot 1 Piloting ≥ 3 suggested `ben` (level 3, workload 0) and slot 2 Medicine ≥ 2 with no suggestion. `mc missions show <id>` → exit 0. One line contains `1`, `Piloting`, `3`, `ben`, `3`, `0`. One line contains `2`, `Medicine`, `2` and `No match`. The output has `1 of 2 slots filled`. A body with `status` `DRAFT` and `preview` `null` → no `slots filled` line.
+- unit (CLI, Review Focus 4): a body with `preview` `{"mission_id": ..., "slots": []}` → the output has `0 of 0 slots filled`.
+- E2E (spec step 3): in the slice 2 journey test, after `leo`'s first submit of "Polar Ice Survey", `diana` runs `mc missions show <id>` → exit 0. Rows show slot 1 `ben`, slot 2 `kai`, slot 3 `gus`. The output has `3 of 3 slots filled`.
+- E2E (existing): `packages/api/tests/e2e/test_matcher_cli.py` still passes.
+
+**Checkpoint:** `.claude/hooks/verify.sh full` → exit 0, no `ERROR` line. `packages/api/tests/e2e/test_approval_cli.py` and `packages/api/tests/e2e/test_matcher_cli.py` ran and passed.
+
+**Interfaces:**
+- Consumes: the step 5 match route handler `match_preview` (`routers/missions.py:232-318` at `6ccb640`), `assign` and `Candidate` from `mc_api.matcher`, `MatchPreview`, `SlotMatch`, `CrewSuggestion` from `mc_shared` (`mc_shared/__init__.py:162-177`). The step 5 `match` command (`commands/missions.py:64-82`).
+- Produces:
+
+  ```python
+  # mc_shared.MissionOut, new field. MatchPreview must be defined above MissionOut.
+  preview: MatchPreview | None = None
+
+  # mc_api.routers.missions
+  def build_preview(scope: OrgScope, mission: Mission, slots: list[SlotOut]) -> MatchPreview:
+      """Load the candidates, the filters and the workload. Call assign. No checks, no writes."""
+
+  # mc_cli.commands.missions
+  def print_preview(preview: MatchPreview) -> None:
+      """Print the step 5 table and the line `<N> of <M> slots filled`."""
+  ```
+
+  `build_preview` takes `slots` as an argument, so `mission_out` does not call itself and loads the slots only one time.
+
+**Steps:**
+
+- [ ] **Step 1 (test writer): Write the tests.** Add the integration examples to `test_approval_view.py`. Reuse the step 5 helpers `give`, `counts` (`test_match_preview.py:27-36`) and `busy_setup` (`test_match_preview.py:153`), and the CLI helper `slot` (`packages/cli/tests/test_match_output.py:11`). Add the CLI unit examples to `test_approval_output.py`. Add the `show` step to the journey test in `e2e/test_approval_cli.py`.
+- [ ] **Step 2: Run the new tests and see them fail.** Run `uv run pytest packages/api/tests/test_approval_view.py packages/cli/tests/test_approval_output.py -q`. Expected: FAIL. `MissionOut` has no `preview`.
+- [ ] **Step 3 (implementer): Move the step 5 types above `MissionOut`** in `mc_shared` (`CrewSuggestion`, `SlotMatch`, `MatchPreview`). Add `MissionOut.preview` with the default `None`.
+- [ ] **Step 4 (implementer): Extract `build_preview`.** Move all data loading and the `assign` call out of the match route handler (`routers/missions.py:247-318`): the crew skills and the holders, the leave check with the local `overlaps` helper, the decliners, and the `booked` loop. That loop gives the workload of each crew member and also marks a crew member as busy if a booked mission overlaps. Keep that double use as it is. The match route keeps its 404, 403 and 409 checks, then returns `build_preview(scope, mission, mission_out(scope, mission).slots)`. Run `uv run pytest packages/api/tests/test_match_preview.py packages/api/tests/test_matcher.py -q`. Expected: PASS, with no change to the step 5 tests.
+- [ ] **Step 5 (implementer): Set `preview` in `mission_out`.** When `mission.status == APPROVAL_REQUIRED`, set `preview = build_preview(scope, mission, slots)`. Otherwise, leave it `None`.
+- [ ] **Step 6 (implementer): Extract `print_preview`** from the step 5 `match` command. The `match` command calls it. `print_mission` calls it when `preview` is set, after the slot table.
+- [ ] **Step 7: Run the checkpoint.** Run `.claude/hooks/verify.sh full`. Expected: exit 0, no `ERROR` line.
+------
+# Spec: mission-approval
+
+## Goal
+Add the mission approval of build step 6 (`design/DESIGN.md:69`) to the API and the CLI. The lead submits and withdraws a mission. A director who does not lead the mission approves or rejects it, and sees the matcher preview in the mission view (DESIGN req 8, 9).
+
+## Acceptance criteria
+| ID | Criterion | The tests must prove |
+|---|---|---|
+| AC1 | The mission lead submits a DRAFT mission (DESIGN 251). | `POST /missions/{id}/submit` by the mission lead gives 200 and a `MissionOut` with status `APPROVAL_REQUIRED`. This is true for a lead and for a director who leads the mission. A mission with no slot can be submitted. |
+| AC2 | The mission lead withdraws a mission from APPROVAL_REQUIRED (DESIGN 252). | `POST /missions/{id}/withdraw` by the mission lead gives 200 and status `DRAFT`. `approved_by_username` and `approved_at` are `null`. After the withdraw, `PATCH /missions/{id}` by the lead gives 200. |
+| AC3 | Only the mission lead submits and withdraws (DESIGN 323-324). | Another lead and a director of the own org each get 403 on submit and on withdraw. The body is `{"role": "<ROLE>", "rule": "Directors and leads submit and withdraw only their own missions"}`. The status does not change. |
+| AC4 | A director who does not lead the mission approves it (DESIGN 253, 331). | `POST /missions/{id}/approve` by such a director gives 200, status `APPROVED`, `approved_by_username` = the director, and `approved_at` between the time before and after the request. A mission that a director leads is approved by another director of the org. |
+| AC5 | A director who does not lead the mission rejects it, without a comment (DESIGN 252, 267). | `POST /missions/{id}/reject` with no body gives 200 and status `DRAFT`. `approved_by_username` and `approved_at` are `null`. After the reject, the lead edits the mission and submits it again with 200. |
+| AC6 | A lead never approves or rejects (DESIGN 331). | A lead gets 403 on approve and on reject. The body is `{"role": "LEAD", "rule": "Only directors approve or reject missions"}`. This is true also when the lead leads the mission. The status does not change. |
+| AC7 | A mission lead never approves or rejects their own mission. A director-led mission needs another director (DESIGN 339-340). | The director who leads the mission gets 403 on approve and on reject. The body is `{"role": "DIRECTOR", "rule": "A mission lead never approves or rejects their own mission"}`. The status stays `APPROVAL_REQUIRED`. |
+| AC8 | Each action is allowed only from one status (DESIGN 250-253). Withdraw from APPROVED is build step 8 (DESIGN 71). | For each action and each other status, the allowed actor gets 409 with `{"detail": "Mission is <STATUS>. <Action> is allowed only in <FROM>."}`. `<Action>` is `Submit`, `Withdraw`, `Approve` or `Reject`. Example: withdraw of an APPROVED mission gives `Mission is APPROVED. Withdraw is allowed only in APPROVAL_REQUIRED.` The status does not change. |
+| AC9 | The check order is crew 403, then 404, then 403, then 409. | A lead who does not lead a COMPLETED mission gets 403 on submit, not 409. A lead of org B gets 404 on approve of a DRAFT mission of org A, not 403. |
+| AC10 | Crew members have no access to the transitions (DESIGN 331). | A crew member gets 403 on each of the four routes. The body is `{"role": "CREW", "rule": "Only directors and leads manage and view missions"}`. |
+| AC11 | A mission of another org is not visible (DESIGN req 4, 22). | A director and a lead of org B each get 404 on each of the four routes for a mission of org A. Each body equals the body for a random UUID: `{"detail": "Not found"}`. The org A mission does not change. |
+| AC12 | The mission details are final in APPROVAL_REQUIRED (DESIGN 267, 274). | `PATCH /missions/{id}`, a slot add and a slot remove by the lead each give 409 when the mission is `APPROVAL_REQUIRED`. |
+| AC13 | `MissionOut` shows who approved the mission (DESIGN 198). | `GET /missions/{id}` of a seeded APPROVED mission gives `approved_by_username` = the seeded approver and the seeded `approved_at`. A DRAFT mission that was never approved gives `null` for both. |
+| AC14 | The mission view shows the matcher preview while the mission waits for approval (DESIGN req 9, 267). | `GET /missions/{id}` of an `APPROVAL_REQUIRED` mission gives `preview` = a `MatchPreview`. It equals the body of `GET /missions/{id}/match` for the same mission and data in DRAFT, before the submit. A director who does not lead the mission and a lead who does not lead the mission both get it. In each other status, `preview` is `null`. The view writes no rows. |
+| AC15 | The match route keeps its step 5 rules. | In `APPROVAL_REQUIRED`, `GET /missions/{id}/match` gives 409 to the mission lead and 403 to a director who does not lead the mission. All step 5 matcher tests still pass. |
+| AC16 | Each transition and each rejected transition writes an info log (CLAUDE.md "Conventions"). | Each 200 transition and each 409 writes one INFO record of the logger `mc_api.routers.missions` with the mission ID. No record contains a token. |
+| AC17 | The CLI runs the transitions (DESIGN 426). | `mc missions submit\|withdraw\|approve\|reject <mission-id>` each call the API and print the mission with the new status. A 403, 404, 409 or 422 exits 1 with the API message and no traceback. |
+| AC18 | `mc missions show` prints the approver and the preview. | For an approved mission, the output has the line `Approved by <username> at <YYYY-MM-DD HH:MM> UTC`. For an `APPROVAL_REQUIRED` mission, the output has the preview table of `mc missions match` (Slot, Skill, Min level, Crew, Level, Workload days, `No match` for an unfilled slot) and the line `<N> of <M> slots filled`. Other statuses print no preview. |
+| AC19 | The design document describes the transition table as built. | `design/DESIGN.md:276` says that the code holds the transitions as `action -> (from, to)` and that the route checks the actor. The "Changes" table has a row for this step with the reason: withdraw and reject have the same `(from, to)` and different actors. |
+
+## Non-goals
+- Withdraw from APPROVED to DRAFT, start, complete and cancel (build step 8).
+- Invites and the "open slots only" rule (build step 7).
+- A reject comment or a cancel reason (P2).
+- Approval workflow customization or more than one approval (P2, DESIGN 277).
+- The matcher route for directors or in APPROVAL_REQUIRED. The approval view is `mc missions show` only.
+- A status filter or a flag column in `mc missions list`.
+- New behaviour for the additional-director flag. The no-self-approval rule makes sure that another director approves.
+- A README change. Build step 11 writes the demo (DESIGN 74).
+- A schema change or a migration. `approved_by` and `approved_at` exist.
+
+## End-to-end check
+| # | Action | Expected result | Test |
+|---|---|---|---|
+| 1 | `mc login --user leo`, `mc missions list`, then `mc missions submit <id of "Polar Ice Survey">` | Exit 0. The output has `APPROVAL_REQUIRED`. | `packages/api/tests/e2e/test_approval_cli.py` |
+| 2 | As `leo`: `mc missions approve <id of "Polar Ice Survey">` | Exit 1. The output has `LEAD` and `Only directors approve or reject missions`. | `packages/api/tests/e2e/test_approval_cli.py` |
+| 3 | `mc login --user diana`, then `mc missions show <id of "Polar Ice Survey">` | Exit 0. The preview rows show slot 1 `ben`, slot 2 `kai`, slot 3 `gus`. The output has `3 of 3 slots filled`. | `packages/api/tests/e2e/test_approval_cli.py` |
+| 4 | As `diana`: `mc missions reject <id>`. As `leo`: `mc missions submit <id>`. As `diana`: `mc missions approve <id>` | Each exits 0. The reject output has `DRAFT`. The approve output has `APPROVED` and `Approved by diana at`. | `packages/api/tests/e2e/test_approval_cli.py` |
+| 5 | As `diana`: `mc missions create --title "Deep Field Survey" --start 2027-04-01 --end 2027-04-05`, `mc missions submit <id>`, `mc missions approve <id>`. Then as `dmitri`: `mc missions approve <id>` | Diana's approve exits 1 with `DIRECTOR` and `A mission lead never approves or rejects their own mission`. Dmitri's approve exits 0 with `Approved by dmitri at`. | `packages/api/tests/e2e/test_approval_cli.py` |
+| 6 | As `leo`: `mc missions create ...`, `mc missions submit <id>`, `mc missions withdraw <id>` | Each exits 0. The withdraw output has `DRAFT`. | `packages/api/tests/e2e/test_approval_cli.py` |
+| 7 | As `leo`: `mc missions withdraw <id of "Mars Analogue Habitat">` | Exit 1. The output has `Mission is APPROVED. Withdraw is allowed only in APPROVAL_REQUIRED.` | `packages/api/tests/e2e/test_approval_cli.py` |
+| 8 | `mc login --user nick`, then `mc missions approve <id of "Polar Ice Survey">` | Exit 1. The output has `Not found`. | `packages/api/tests/e2e/test_approval_cli.py` |
+| 9 | `mc login --user ava`, then `mc missions submit <id of "Polar Ice Survey">` | Exit 1. The output has `CREW` and `Only directors and leads manage and view missions`. | `packages/api/tests/e2e/test_approval_cli.py` |
+
+The E2E test uses the seed data and uvicorn on a free port, as the step 4 E2E test does (`packages/api/tests/e2e/conftest.py:17-45`).
+
+## Resolved questions
+| Question | Answer | Source |
+|---|---|---|
+| Task name? | `mission-approval`, folder `.work/mission-approval/` | me |
+| Does the matcher exist? | Yes. Step 5 is complete on `develop` (`a2a51e3`, `347dcb5`, `6ccb640`). | `git log`, `.work/matcher-preview/progress.md` |
+| When does the implementation start? | Now. The step 5 E2E test already proves the seeded preview ben, kai, gus that the E2E step 3 expects. | `packages/api/tests/e2e/test_matcher_cli.py:99-103` |
+| Where does the implementation run? | In the main checkout, directly on `develop`, with no new branch. This is the same override as step 5. | me |
+| What is the approval view? | `GET /missions/{id}` and `mc missions show` include the matcher preview. | me |
+| Who sees the preview, and when? | Each director and lead who can view the mission, only in APPROVAL_REQUIRED. | me |
+| Does the match route open to directors? | No. It stays DRAFT only, for the mission lead. | me, `.work/matcher-preview/spec.md:10-11` |
+| How does the view get the preview? | The step 5 route loads the data inside its handler. Step 6 moves the load into one function that the match route and the mission view both call. | `.work/matcher-preview/plan.md:169-173` |
+| Does submit have a guard? | No. Each DRAFT mission can be submitted, also with no slot. | me |
+| Does the API return the approver? | Yes. `MissionOut` adds `approved_by_username` and `approved_at`. Show prints them. | me |
+| What does step 6 add for the additional-director flag? | Only the self-approval 403. The API already derives the flag, and show prints it. | me, `packages/api/src/mc_api/routers/missions.py:67`, `packages/cli/src/mc_cli/commands/missions.py:20-21` |
+| Can a director reject their own mission? | No. 403, the same rule as approve. The lead withdraws instead. | me |
+| Does withdraw from APPROVED work in this step? | No. It gives 409. Build step 8 adds it. | me, `design/DESIGN.md:71` |
+| Does a director find waiting missions with a filter? | No. `mc missions list` already shows the status. | me, `packages/cli/src/mc_cli/commands/missions.py:46-52` |
+| How does the code hold the transitions? | As `action -> (from, to)`. The route checks the actor. `(from, to)` cannot be the key, because withdraw and reject share it. | me, `design/DESIGN.md:252, 276` |
+| Does DESIGN.md change? | Yes. Line 276 and a "Changes" row. | me |
+| Does the README change? | No. Build step 11 writes the demo. | me, `design/DESIGN.md:74` |
+| What is the check order? | Crew 403, 404, 403, 409, as the edit routes do. | `packages/api/src/mc_api/routers/missions.py:126-134` |
+| Does the schema change? | No. `approved_by` and `approved_at` exist. | `packages/api/src/mc_api/models.py:128-129` |
+plan.md
+spec.md
+origin	https://github.com/JanesH64/mutinex-interview.git (fetch)
+origin	https://github.com/JanesH64/mutinex-interview.git (push)
+  chore/claude-kit
+  crew-profile
+* develop
+  feat/auth-tenant
+  feat/data-model-seed
+  main
++ matcher-preview
+  missions-draft
+  remotes/origin/HEAD -> origin/main
+  remotes/origin/develop
+  remotes/origin/main
