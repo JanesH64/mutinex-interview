@@ -47,3 +47,55 @@ def test_bad_id_exits_1_without_traceback(mc):
     code, out = mc("missions", "submit", "abc")
     assert code == 1
     assert "Traceback" not in out
+
+
+def test_approval_journey(mc):
+    # Spec steps 1, 2, 4, 5, 8. Polar Ice Survey is still DRAFT here.
+    assert mc("login", "--user", "leo")[0] == 0
+    mid = mission_id(mc("missions", "list")[1], "Polar Ice Survey")
+    code, out = mc("missions", "submit", mid)
+    assert code == 0
+    assert "APPROVAL_REQUIRED" in out
+    code, out = mc("missions", "approve", mid)
+    assert code == 1
+    assert "LEAD" in out
+    assert "Only directors approve or reject missions" in out
+
+    assert mc("login", "--user", "diana")[0] == 0
+    code, out = mc("missions", "reject", mid)
+    assert code == 0
+    assert "DRAFT" in out
+    assert mc("login", "--user", "leo")[0] == 0
+    assert mc("missions", "submit", mid)[0] == 0
+    assert mc("login", "--user", "diana")[0] == 0
+    code, out = mc("missions", "approve", mid)
+    assert code == 0
+    assert "APPROVED" in out
+    assert "Approved by diana at" in out
+
+    code, out = mc(
+        "missions", "create", "--title", "Deep Field Survey", "--start", "2027-04-01",
+        "--end", "2027-04-05",
+    )  # fmt: skip
+    own = re.search(r"Created mission ([0-9a-f-]{36})", out).group(1)
+    assert mc("missions", "submit", own)[0] == 0
+    code, out = mc("missions", "approve", own)
+    assert code == 1
+    assert "DIRECTOR" in out
+    assert "A mission lead never approves or rejects their own mission" in out
+    assert mc("login", "--user", "dmitri")[0] == 0
+    code, out = mc("missions", "approve", own)
+    assert code == 0
+    assert "Approved by dmitri at" in out
+
+    assert mc("login", "--user", "nick")[0] == 0
+    code, out = mc("missions", "approve", mid)
+    assert code == 1
+    assert "Not found" in out
+
+
+def test_approve_with_a_bad_id_exits_1_without_traceback(mc):
+    assert mc("login", "--user", "diana")[0] == 0
+    code, out = mc("missions", "approve", "abc")
+    assert code == 1
+    assert "Traceback" not in out

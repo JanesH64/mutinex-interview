@@ -1,3 +1,4 @@
+from datetime import UTC
 from urllib.parse import quote
 
 import typer
@@ -19,6 +20,9 @@ def print_mission(m: MissionOut) -> None:
     console.print(m.lead_username)
     if m.requires_additional_director:
         console.print("This mission needs an additional director for approval.")
+    if m.approved_by_username and m.approved_at:
+        when = m.approved_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
+        console.print(f"Approved by {m.approved_by_username} at {when} UTC")
     table = Table("Slot", "Skill", "Min level")
     for slot in m.slots:
         table.add_row(str(slot.position), slot.skill_name, str(slot.min_level))
@@ -108,6 +112,20 @@ def submit(mission_id: str) -> None:
 def withdraw(mission_id: str) -> None:
     """Withdraw a mission that you lead from APPROVAL_REQUIRED to DRAFT."""
     path = f"/missions/{quote(mission_id, safe='')}/withdraw"
+    print_mission(MissionOut.model_validate(request("POST", path).json()))
+
+
+@app.command()
+def approve(mission_id: str) -> None:
+    """Approve an APPROVAL_REQUIRED mission that you do not lead (directors only)."""
+    path = f"/missions/{quote(mission_id, safe='')}/approve"
+    print_mission(MissionOut.model_validate(request("POST", path).json()))
+
+
+@app.command()
+def reject(mission_id: str) -> None:
+    """Reject an APPROVAL_REQUIRED mission that you do not lead and return it to DRAFT."""
+    path = f"/missions/{quote(mission_id, safe='')}/reject"
     print_mission(MissionOut.model_validate(request("POST", path).json()))
 
 

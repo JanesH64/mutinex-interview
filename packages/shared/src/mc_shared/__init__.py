@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Self
 from uuid import UUID
@@ -111,6 +111,8 @@ class MissionOut(BaseModel):
     lead_id: UUID
     lead_username: str
     requires_additional_director: bool
+    approved_by_username: str | None = None
+    approved_at: datetime | None = None
     slots: list[SlotOut]
 
 
