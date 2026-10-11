@@ -1,14 +1,10 @@
-import os
-
 import httpx
 import typer
 from rich.console import Console
 
-from mc_cli.client import error_message, request, send
+from mc_cli.client import API_URL, err, fail, request, send
 from mc_cli.token_store import delete_token, save_token
 from mc_shared import Health, Me, Token
-
-API_URL = os.environ.get("MC_API_URL", "http://localhost:8000")
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -41,11 +37,10 @@ def login(user: str = typer.Option(..., "--user", help="Username to log in as.")
     """Log in and store the token."""
     response = send("POST", "/auth/login", json={"username": user})
     if response.status_code == 401:
-        console.print(f"Login failed: unknown user '{user}'", markup=False)
+        err.print(f"Login failed: unknown user '{user}'")
         raise typer.Exit(1)
     if response.status_code >= 400:
-        console.print(error_message(response), markup=False)
-        raise typer.Exit(1)
+        fail(response)
     save_token(Token.model_validate(response.json()).access_token)
     me = Me.model_validate(request("GET", "/me").json())
     console.print(f"Logged in as {show(me)}", markup=False)
