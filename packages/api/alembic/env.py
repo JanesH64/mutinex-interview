@@ -2,6 +2,7 @@ from logging.config import fileConfig
 
 from alembic import context
 
+import mc_api.models  # noqa: F401
 from mc_api.db import DATABASE_URL, Base, engine
 
 # this is the Alembic Config object, which provides
