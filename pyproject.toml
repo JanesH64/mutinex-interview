@@ -20,6 +20,7 @@ dev = ["pytest", "ruff>=0.17.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["packages"]
+markers = ["e2e: starts uvicorn and runs the mc CLI as a subprocess"]
 
 [tool.ruff]
 line-length = 100

@@ -19,12 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from mc_api.db import Base
-
-
-class UserRole(enum.StrEnum):
-    DIRECTOR = "DIRECTOR"
-    LEAD = "LEAD"
-    CREW = "CREW"
+from mc_shared import UserRole
 
 
 class MissionStatus(enum.StrEnum):

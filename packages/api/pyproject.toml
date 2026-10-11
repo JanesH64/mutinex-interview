@@ -9,6 +9,7 @@ dependencies = [
     "sqlalchemy>=2",
     "psycopg[binary]",
     "alembic",
+    "pyjwt>=2.15.1",
 ]
 
 [project.scripts]
