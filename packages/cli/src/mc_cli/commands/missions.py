@@ -97,6 +97,20 @@ def edit(
     print_mission(MissionOut.model_validate(request("PATCH", path, json=body).json()))
 
 
+@app.command()
+def submit(mission_id: str) -> None:
+    """Submit a DRAFT mission that you lead for approval."""
+    path = f"/missions/{quote(mission_id, safe='')}/submit"
+    print_mission(MissionOut.model_validate(request("POST", path).json()))
+
+
+@app.command()
+def withdraw(mission_id: str) -> None:
+    """Withdraw a mission that you lead from APPROVAL_REQUIRED to DRAFT."""
+    path = f"/missions/{quote(mission_id, safe='')}/withdraw"
+    print_mission(MissionOut.model_validate(request("POST", path).json()))
+
+
 slots = typer.Typer()
 app.add_typer(slots, name="slots", help="Add and remove slots of a DRAFT mission.")
 

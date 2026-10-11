@@ -273,7 +273,7 @@ stateDiagram-v2
 **Rules**
 - The lead can edit a mission only in DRAFT.
 - Staffing changes need no new approval. Example: the lead replaces a crew member who declined.
-- The code holds the allowed transitions as `(from, to) -> allowed roles`. This is the extension point for approval workflow customization (P2).
+- The code holds the allowed transitions as `action -> (from, to)`. The route of each action checks the actor. This is the extension point for approval workflow customization (P2).
 - P0 uses one director approval. A later version can store approval configurations in the DB.
 - Invites happen only after approval. This way, unfunded missions do not reserve scarce skills.
 - There is no separate staffing state. The assignment states show the staffing progress of an APPROVED mission.
@@ -459,3 +459,4 @@ The API gets the next mission number with `UPDATE org SET mission_seq = mission_
 |------|--------|--------|
 | 2026-10-11 | Add build step 10, org crew view. The demo becomes step 11. | Requirement 11 had no build step. Step 9 covers only the own profile of a crew member. |
 | 2026-10-11 | Decide the matcher cost order, the scarcity rule and the solver. | Build step 5 had to evaluate the scarcity term and scipy. |
+| 2026-10-11 | Key the transition table by action. | Withdraw and reject both go from APPROVAL_REQUIRED to DRAFT, with different actors. |
