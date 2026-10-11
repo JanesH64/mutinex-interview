@@ -54,7 +54,7 @@ def test_lead_journey(mc):
     code, out = mc("missions", "edit", mission_id, "--title", "Ice Core Drill II")
     assert code == 0
     assert "Ice Core Drill II" in out
-    # Spec step 6 (part): list and show.
+    # Spec step 6: list and show.
     code, out = mc("missions", "list")
     assert code == 0
     for title in (
@@ -70,7 +70,6 @@ def test_lead_journey(mc):
     assert "leo" in out
     assert "EVA" in out
     assert "Geology" in out
-    # Later slices add the next spec steps below, in order.
 
 
 def test_other_org_sees_not_found(mc):

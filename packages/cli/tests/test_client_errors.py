@@ -63,3 +63,29 @@ def test_422_with_a_text_detail_shows_the_text():
 def test_409_shows_the_detail():
     detail = "Mission is APPROVED. Edits are allowed only in DRAFT."
     assert detail in error_message(response(409, json={"detail": detail}))
+
+
+@pytest.mark.parametrize(
+    ("status", "kwargs", "text"),
+    [
+        (
+            409,
+            {"json": {"detail": "Mission is APPROVED. Edits are allowed only in DRAFT."}},
+            "Mission is APPROVED",
+        ),
+        (422, {"json": {"detail": "Unknown skill: abc"}}, "Unknown skill: abc"),
+    ],
+)
+def test_request_exits_1_for_409_and_422(monkeypatch, capsys, status, kwargs, text):
+    monkeypatch.setattr(client.httpx, "request", lambda *a, **k: response(status, **kwargs))
+    with pytest.raises(typer.Exit) as exc:
+        client.request("GET", "/x")
+    assert exc.value.exit_code == 1
+    assert text in capsys.readouterr().err
+
+
+def test_request_exits_1_for_a_redirect(monkeypatch):
+    monkeypatch.setattr(client.httpx, "request", lambda *a, **k: response(307, text=""))
+    with pytest.raises(typer.Exit) as exc:
+        client.request("GET", "/missions/")
+    assert exc.value.exit_code == 1

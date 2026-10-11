@@ -1,3 +1,4 @@
+from datetime import date
 from uuid import uuid4
 
 import pytest
@@ -33,6 +34,17 @@ def test_merged_dates_must_be_valid(client, make_user, session):
     bad = client.patch(url, json={"start_date": "2027-03-11"}, headers=auth(lead))
     assert bad.status_code == 422
     assert client.get(url, headers=auth(lead)).json()["start_date"] == "2027-03-05"
+
+
+def test_end_before_stored_start_gives_422(client, make_user, session):
+    lead = make_user(UserRole.LEAD)
+    mission = make_mission(session, lead, start=date(2027, 3, 5))
+    session.commit()  # a 422 rolls back the shared session
+    url = f"/missions/{mission.id}"
+    bad = client.patch(url, json={"end_date": "2027-03-04"}, headers=auth(lead))
+    assert bad.status_code == 422
+    session.expire_all()
+    assert session.get(Mission, mission.id).end_date == date(2027, 12, 31)
 
 
 @pytest.mark.parametrize("body", [{}, {"title": None}])
@@ -100,9 +112,11 @@ def test_other_org_gives_404_and_does_not_change(client, make_user, session):
 
 def test_crew_gets_403(client, make_user, session):
     crew = make_user(UserRole.CREW)
-    mission = make_mission(
+    own = make_mission(
         session, make_user(UserRole.LEAD, org=session.get(Organization, crew.org_id))
     )
-    response = client.patch(f"/missions/{mission.id}", json={"title": "X"}, headers=auth(crew))
-    assert response.status_code == 403
-    assert response.json() == CREW_403
+    foreign = make_mission(session, make_user(UserRole.LEAD))
+    for mission in (own, foreign):
+        response = client.patch(f"/missions/{mission.id}", json={"title": "X"}, headers=auth(crew))
+        assert response.status_code == 403
+        assert response.json() == CREW_403
