@@ -1,14 +1,12 @@
 import logging
-from typing import Annotated, TypeVar
+from typing import TypeVar
 from uuid import UUID
 
-from fastapi import Depends, HTTPException
+from fastapi import HTTPException
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
-from mc_api.auth import get_current_user
-from mc_api.db import get_session
-from mc_api.models import AppUser, Organization
+from mc_api.models import Organization
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
@@ -37,10 +35,3 @@ class OrgScope:
         return self.session.scalars(
             select(Organization).where(Organization.id == self.org_id)
         ).one()
-
-
-def get_scope(
-    user: Annotated[AppUser, Depends(get_current_user)],
-    session: Annotated[Session, Depends(get_session)],
-) -> OrgScope:
-    return OrgScope(session, user.org_id)
