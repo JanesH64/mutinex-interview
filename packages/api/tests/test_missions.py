@@ -5,16 +5,11 @@ import pytest
 
 import mc_shared
 from mc_api import models
-from mc_api.auth import create_token
 from mc_api.models import Mission, MissionRequirement, MissionStatus, Organization, Skill
 from mc_shared import UserRole
 
 BODY = {"title": "T", "start_date": "2027-03-01", "end_date": "2027-03-10"}
 CREW_403 = {"role": "CREW", "rule": "Only directors and leads manage and view missions"}
-
-
-def auth(user):
-    return {"Authorization": f"Bearer {create_token(user.id)}"}
 
 
 def make_mission(session, lead, start=date(2027, 1, 1)):
@@ -31,7 +26,7 @@ def make_mission(session, lead, start=date(2027, 1, 1)):
     return mission
 
 
-def test_lead_creates_a_draft_mission(client, make_user):
+def test_lead_creates_a_draft_mission(client, make_user, auth):
     lead = make_user(UserRole.LEAD)
     response = client.post("/missions", json=BODY, headers=auth(lead))
     assert response.status_code == 201
@@ -44,14 +39,14 @@ def test_lead_creates_a_draft_mission(client, make_user):
     assert body["description"] is None
 
 
-def test_director_mission_requires_additional_director(client, make_user):
+def test_director_mission_requires_additional_director(client, make_user, auth):
     director = make_user(UserRole.DIRECTOR)
     response = client.post("/missions", json=BODY, headers=auth(director))
     assert response.status_code == 201
     assert response.json()["requires_additional_director"] is True
 
 
-def test_flag_follows_the_current_role_of_the_lead(client, make_user, session):
+def test_flag_follows_the_current_role_of_the_lead(client, make_user, session, auth):
     lead = make_user(UserRole.LEAD)
     mission_id = client.post("/missions", json=BODY, headers=auth(lead)).json()["id"]
     lead.role = UserRole.DIRECTOR
@@ -68,12 +63,12 @@ def test_flag_follows_the_current_role_of_the_lead(client, make_user, session):
         {k: v for k, v in BODY.items() if k != "title"},
     ],
 )
-def test_invalid_body_gives_422(client, make_user, body):
+def test_invalid_body_gives_422(client, make_user, body, auth):
     lead = make_user(UserRole.LEAD)
     assert client.post("/missions", json=body, headers=auth(lead)).status_code == 422
 
 
-def test_list_returns_own_org_missions_newest_start_first(client, make_user, session):
+def test_list_returns_own_org_missions_newest_start_first(client, make_user, session, auth):
     lead = make_user(UserRole.LEAD)
     older = make_mission(session, lead, date(2027, 1, 1))
     newer = make_mission(session, lead, date(2027, 2, 1))
@@ -96,7 +91,7 @@ def test_list_returns_own_org_missions_newest_start_first(client, make_user, ses
     }
 
 
-def test_show_returns_active_slots_in_position_order(client, make_user, session):
+def test_show_returns_active_slots_in_position_order(client, make_user, session, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     geology = Skill(org_id=lead.org_id, name="Geology")
@@ -129,7 +124,7 @@ def test_show_returns_active_slots_in_position_order(client, make_user, session)
     assert all("id" in s for s in slots)
 
 
-def test_crew_gets_403_on_each_mission_route(client, make_user, session):
+def test_crew_gets_403_on_each_mission_route(client, make_user, session, auth):
     crew = make_user(UserRole.CREW)
     own = make_mission(
         session, make_user(UserRole.LEAD, org=session.get(Organization, crew.org_id))
@@ -146,7 +141,7 @@ def test_crew_gets_403_on_each_mission_route(client, make_user, session):
         assert response.json() == CREW_403
 
 
-def test_other_org_gives_the_same_404_as_a_missing_id(client, make_user, session):
+def test_other_org_gives_the_same_404_as_a_missing_id(client, make_user, session, auth):
     director = make_user(UserRole.DIRECTOR)
     lead = make_user(UserRole.LEAD, org=session.get(Organization, director.org_id))
     other = make_mission(session, make_user(UserRole.LEAD))
@@ -157,7 +152,7 @@ def test_other_org_gives_the_same_404_as_a_missing_id(client, make_user, session
         assert response.json() == missing.json() == {"detail": "Not found"}
 
 
-def test_mission_id_that_is_not_a_uuid_gives_422(client, make_user):
+def test_mission_id_that_is_not_a_uuid_gives_422(client, make_user, auth):
     lead = make_user(UserRole.LEAD)
     assert client.get("/missions/not-a-uuid", headers=auth(lead)).status_code == 422
 

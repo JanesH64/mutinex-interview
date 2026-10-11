@@ -83,3 +83,13 @@ def make_user(session):
         return user
 
     return make
+
+
+@pytest.fixture
+def auth():
+    from mc_api.auth import create_token
+
+    def headers(user):
+        return {"Authorization": f"Bearer {create_token(user.id)}"}
+
+    return headers
