@@ -94,3 +94,19 @@ def test_other_org_skill_is_unknown(mc):
     code, out = mc("profile", "skills", "set", medicine, "--level", "3")
     assert code == 1
     assert "Unknown skill" in out
+
+
+def test_conflicts_name_the_assignment(mc):
+    assert mc("login", "--user", "hana")[0] == 0
+    robotics = skill_ids(mc("skills", "list")[1])["Robotics"]
+
+    code, out = mc("profile", "skills", "set", robotics, "--level", "2")
+    assert code == 1
+    assert all(word in out for word in ("Orbital Debris Survey", "INVITED", "Robotics level 3"))
+
+    code, out = mc(
+        "profile", "availability", "add",
+        "--from", "2026-12-10", "--to", "2026-12-10", "--reason", "SICK",
+    )  # fmt: skip
+    assert code == 1
+    assert "Orbital Debris Survey" in out and "2026-12-07 to 2026-12-18" in out
