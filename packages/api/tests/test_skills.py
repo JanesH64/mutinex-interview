@@ -1,15 +1,10 @@
 from uuid import uuid4
 
-from mc_api.auth import create_token
 from mc_api.models import Organization, Skill
 from mc_shared import UserRole
 
 
-def auth(user):
-    return {"Authorization": f"Bearer {create_token(user.id)}"}
-
-
-def test_each_role_lists_own_org_skills_sorted_by_name(client, make_user, session):
+def test_each_role_lists_own_org_skills_sorted_by_name(client, make_user, session, auth):
     director = make_user(UserRole.DIRECTOR)
     org = session.get(Organization, director.org_id)
     lead = make_user(UserRole.LEAD, org=org)

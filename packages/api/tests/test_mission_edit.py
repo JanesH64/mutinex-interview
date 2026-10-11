@@ -2,7 +2,7 @@ from datetime import date
 from uuid import uuid4
 
 import pytest
-from test_missions import CREW_403, auth, make_mission
+from test_missions import CREW_403, make_mission
 
 from mc_api.models import Mission, MissionStatus, Organization
 from mc_shared import UserRole
@@ -10,7 +10,7 @@ from mc_shared import UserRole
 NOT_OWNER = "Directors and leads edit only their own missions"
 
 
-def test_patch_changes_only_the_given_fields(client, make_user, session):
+def test_patch_changes_only_the_given_fields(client, make_user, session, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     mission.description = "Keep me"
@@ -23,7 +23,7 @@ def test_patch_changes_only_the_given_fields(client, make_user, session):
     assert (body["start_date"], body["end_date"]) == ("2027-01-01", "2027-12-31")
 
 
-def test_merged_dates_must_be_valid(client, make_user, session):
+def test_merged_dates_must_be_valid(client, make_user, session, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     mission.end_date = mission.end_date.replace(month=3, day=10)
@@ -36,7 +36,7 @@ def test_merged_dates_must_be_valid(client, make_user, session):
     assert client.get(url, headers=auth(lead)).json()["start_date"] == "2027-03-05"
 
 
-def test_end_before_stored_start_gives_422(client, make_user, session):
+def test_end_before_stored_start_gives_422(client, make_user, session, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead, start=date(2027, 3, 5))
     session.commit()  # a 422 rolls back the shared session
@@ -48,7 +48,7 @@ def test_end_before_stored_start_gives_422(client, make_user, session):
 
 
 @pytest.mark.parametrize("body", [{}, {"title": None}])
-def test_empty_or_null_patch_changes_nothing(client, make_user, session, body):
+def test_empty_or_null_patch_changes_nothing(client, make_user, session, body, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     response = client.patch(f"/missions/{mission.id}", json=body, headers=auth(lead))
@@ -56,14 +56,14 @@ def test_empty_or_null_patch_changes_nothing(client, make_user, session, body):
     assert response.json()["title"] == "M"
 
 
-def test_empty_title_gives_422(client, make_user, session):
+def test_empty_title_gives_422(client, make_user, session, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     response = client.patch(f"/missions/{mission.id}", json={"title": ""}, headers=auth(lead))
     assert response.status_code == 422
 
 
-def test_non_owner_in_the_own_org_gets_403(client, make_user, session):
+def test_non_owner_in_the_own_org_gets_403(client, make_user, session, auth):
     owner = make_user(UserRole.LEAD)
     org = session.get(Organization, owner.org_id)
     mission = make_mission(session, owner)
@@ -84,7 +84,7 @@ def test_non_owner_in_the_own_org_gets_403(client, make_user, session):
         MissionStatus.CANCELLED,
     ],
 )
-def test_not_draft_gives_409(client, make_user, session, status):
+def test_not_draft_gives_409(client, make_user, session, status, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     mission.status = status
@@ -96,7 +96,7 @@ def test_not_draft_gives_409(client, make_user, session, status):
     }
 
 
-def test_other_org_gives_404_and_does_not_change(client, make_user, session):
+def test_other_org_gives_404_and_does_not_change(client, make_user, session, auth):
     director = make_user(UserRole.DIRECTOR)
     lead = make_user(UserRole.LEAD, org=session.get(Organization, director.org_id))
     other = make_mission(session, make_user(UserRole.LEAD))
@@ -110,7 +110,7 @@ def test_other_org_gives_404_and_does_not_change(client, make_user, session):
     assert session.get(Mission, other.id).title == "M"
 
 
-def test_crew_gets_403(client, make_user, session):
+def test_crew_gets_403(client, make_user, session, auth):
     crew = make_user(UserRole.CREW)
     own = make_mission(
         session, make_user(UserRole.LEAD, org=session.get(Organization, crew.org_id))

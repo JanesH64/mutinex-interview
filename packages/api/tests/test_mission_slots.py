@@ -2,7 +2,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
-from test_missions import CREW_403, auth, make_mission
+from test_missions import CREW_403, make_mission
 
 from mc_api.models import MissionRequirement, MissionStatus, Organization, Skill
 from mc_shared import UserRole
@@ -38,7 +38,7 @@ def rows(session, mission):
     )
 
 
-def test_add_uses_the_lowest_free_position(client, make_user, session):
+def test_add_uses_the_lowest_free_position(client, make_user, session, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     s1 = make_skill(session, lead.org_id, "S1")
@@ -53,7 +53,7 @@ def test_add_uses_the_lowest_free_position(client, make_user, session):
     assert [s["position"] for s in second.json()["slots"]] == [1, 2]
 
 
-def test_remove_archives_the_row_and_frees_the_position(client, make_user, session):
+def test_remove_archives_the_row_and_frees_the_position(client, make_user, session, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     skill = make_skill(session, lead.org_id, "S1")
@@ -74,7 +74,7 @@ def test_remove_archives_the_row_and_frees_the_position(client, make_user, sessi
 
 
 @pytest.mark.parametrize("level", [0, 6])
-def test_level_out_of_range_gives_422(client, make_user, session, level):
+def test_level_out_of_range_gives_422(client, make_user, session, level, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     skill = make_skill(session, lead.org_id, "S1")
@@ -87,7 +87,7 @@ def test_level_out_of_range_gives_422(client, make_user, session, level):
     assert rows(session, mission) == []
 
 
-def test_unknown_or_other_org_skill_gives_422(client, make_user, session):
+def test_unknown_or_other_org_skill_gives_422(client, make_user, session, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     foreign = make_skill(session, make_user(UserRole.LEAD).org_id, "Foreign")
@@ -102,7 +102,7 @@ def test_unknown_or_other_org_skill_gives_422(client, make_user, session):
     assert rows(session, mission) == []
 
 
-def test_remove_of_a_missing_or_bad_position(client, make_user, session):
+def test_remove_of_a_missing_or_bad_position(client, make_user, session, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     url = f"/missions/{mission.id}/slots"
@@ -113,7 +113,7 @@ def test_remove_of_a_missing_or_bad_position(client, make_user, session):
     assert client.delete(f"{url}/abc", headers=auth(lead)).status_code == 422
 
 
-def test_non_owner_in_the_own_org_gets_403(client, make_user, session):
+def test_non_owner_in_the_own_org_gets_403(client, make_user, session, auth):
     owner = make_user(UserRole.LEAD)
     org = session.get(Organization, owner.org_id)
     mission = make_mission(session, owner)
@@ -142,7 +142,7 @@ def test_non_owner_in_the_own_org_gets_403(client, make_user, session):
         MissionStatus.CANCELLED,
     ],
 )
-def test_not_draft_gives_409_and_changes_no_slot(client, make_user, session, status):
+def test_not_draft_gives_409_and_changes_no_slot(client, make_user, session, status, auth):
     lead = make_user(UserRole.LEAD)
     mission = make_mission(session, lead)
     skill = make_skill(session, lead.org_id, "S1")
@@ -162,7 +162,7 @@ def test_not_draft_gives_409_and_changes_no_slot(client, make_user, session, sta
 
 
 def test_owner_gets_409_before_skill_check_and_non_owner_403_on_approved(
-    client, make_user, session
+    client, make_user, session, auth
 ):
     owner = make_user(UserRole.LEAD)
     other = make_user(UserRole.LEAD, org=session.get(Organization, owner.org_id))
@@ -180,7 +180,7 @@ def test_owner_gets_409_before_skill_check_and_non_owner_403_on_approved(
     assert add.status_code == 409
 
 
-def test_other_org_gives_404_and_does_not_change(client, make_user, session):
+def test_other_org_gives_404_and_does_not_change(client, make_user, session, auth):
     director = make_user(UserRole.DIRECTOR)
     lead = make_user(UserRole.LEAD, org=session.get(Organization, director.org_id))
     other_lead = make_user(UserRole.LEAD)
@@ -199,7 +199,7 @@ def test_other_org_gives_404_and_does_not_change(client, make_user, session):
     assert rows(session, other) == before
 
 
-def test_crew_gets_403(client, make_user, session):
+def test_crew_gets_403(client, make_user, session, auth):
     crew = make_user(UserRole.CREW)
     lead = make_user(UserRole.LEAD, org=session.get(Organization, crew.org_id))
     mission = make_mission(session, lead)
