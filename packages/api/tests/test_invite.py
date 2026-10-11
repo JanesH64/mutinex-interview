@@ -6,10 +6,16 @@ import pytest
 from sqlalchemy import text
 from test_mission_slots import add_slot, make_skill
 from test_missions import CREW_403, make_mission
-from test_profile_conflicts import assign
+from test_profile_conflicts import assign, mission_at
 
-from mc_api.models import AssignmentStatus, MissionStatus, Organization
-from mc_shared import UserRole
+from mc_api.models import (
+    AssignmentStatus,
+    CrewSkill,
+    MissionStatus,
+    Organization,
+    Unavailability,
+)
+from mc_shared import UnavailabilityReason, UserRole
 
 S = MissionStatus
 A = AssignmentStatus
@@ -28,9 +34,10 @@ def world(session, make_user):
     slot1 = add_slot(session, mission, 1, make_skill(session, lead.org_id, "Medicine"), 2)
     slot2 = add_slot(session, mission, 2, eva, 3)
     c = make_user(UserRole.CREW, org)
+    session.add(CrewSkill(org_id=org.id, user_id=c.id, skill_id=eva.id, level=3))
     session.flush()
     return {
-        "lead": lead, "org": org, "mission": mission, "slot1": slot1, "slot2": slot2, "c": c,
+        "lead": lead, "org": org, "mission": mission, "slot1": slot1, "slot2": slot2, "c": c, "eva": eva,
     }  # fmt: skip
 
 
@@ -261,3 +268,171 @@ def test_match_preview_of_a_draft_mission_is_unchanged(client, auth, world, sess
     response = client.get(f"/missions/{w['mission'].id}/match", headers=auth(w["lead"]))
     assert response.status_code == 200
     assert [m["slot"]["position"] for m in response.json()["slots"]] == [1, 2]
+
+
+def reject(client, auth, w, detail):
+    response = invite(client, auth, w["lead"], w["mission"], 2, w["c"].username)
+    assert response.status_code == 409
+    assert response.json() == {"detail": detail}
+
+
+def set_level(session, w, level):
+    row = session.get(CrewSkill, (w["c"].id, w["eva"].id))
+    if level is None:
+        session.delete(row)
+    else:
+        row.level = level
+    session.flush()
+
+
+def leave(session, w, start, end, reason=UnavailabilityReason.SICK):
+    session.add(
+        Unavailability(
+            org_id=w["org"].id, user_id=w["c"].id, start_date=start, end_date=end, reason=reason
+        )
+    )
+    session.flush()
+
+
+def book(session, w, title, start, end, status=A.INVITED):
+    other = mission_at(session, w["lead"], title, start, end)
+    assign(session, other, add_slot(session, other, 1, w["eva"]), w["c"], status)
+    return other
+
+
+def test_decliner_of_this_mission_gives_409(client, session, auth, world):
+    w = world
+    assign(session, w["mission"], w["slot1"], w["c"], A.DECLINED)
+    reject(client, auth, w, f"{w['c'].username} declined this mission.")
+
+
+def test_cancelled_row_on_this_mission_still_accepts_an_invite(client, session, auth, world):
+    w = world
+    assign(session, w["mission"], w["slot1"], w["c"], A.CANCELLED)
+    response = invite(client, auth, w["lead"], w["mission"], 2, w["c"].username)
+    assert response.status_code == 201
+
+
+@pytest.mark.parametrize("level, status", [(3, 201), (4, 201)])
+def test_skill_at_or_above_the_minimum_level_passes(client, session, auth, world, level, status):
+    set_level(session, world, level)
+    w = world
+    assert invite(client, auth, w["lead"], w["mission"], 2, w["c"].username).status_code == status
+
+
+@pytest.mark.parametrize("level", [2, None])
+def test_skill_below_the_minimum_or_missing_gives_409(client, session, auth, world, level):
+    w = world
+    set_level(session, w, level)
+    reject(client, auth, w, f"{w['c'].username} does not have EVA at level 3 or higher.")
+
+
+@pytest.mark.parametrize(
+    "start, end",
+    [
+        (date(2027, 2, 20), date(2027, 3, 1)),
+        (date(2027, 3, 10), date(2027, 3, 12)),
+        (date(2027, 3, 4), date(2027, 3, 5)),
+    ],
+)
+def test_leave_in_the_mission_dates_gives_409_without_the_reason(
+    client, session, auth, world, start, end
+):
+    w = world
+    leave(session, w, start, end)
+    reject(client, auth, w, f"{w['c'].username} is unavailable from {start} to {end}.")
+
+
+@pytest.mark.parametrize(
+    "start, end",
+    [(date(2027, 2, 15), date(2027, 2, 28)), (date(2027, 3, 11), date(2027, 3, 15))],
+)
+def test_leave_outside_the_mission_dates_gives_201(client, session, auth, world, start, end):
+    w = world
+    leave(session, w, start, end)
+    assert invite(client, auth, w["lead"], w["mission"], 2, w["c"].username).status_code == 201
+
+
+def test_leave_message_names_the_earliest_overlapping_leave(client, session, auth, world):
+    w = world
+    leave(session, w, date(2027, 3, 8), date(2027, 3, 9))
+    leave(session, w, date(2027, 3, 2), date(2027, 3, 3))
+    reject(client, auth, w, f"{w['c'].username} is unavailable from 2027-03-02 to 2027-03-03.")
+
+
+@pytest.mark.parametrize("status", [A.INVITED, A.ACCEPTED])
+def test_active_assignment_on_an_overlapping_mission_gives_409(
+    client, session, auth, world, status
+):
+    w = world
+    book(session, w, "Other", date(2027, 3, 10), date(2027, 3, 15), status)
+    reject(
+        client,
+        auth,
+        w,
+        f'{w["c"].username} is booked on mission "Other" from 2027-03-10 to 2027-03-15.',
+    )
+
+
+@pytest.mark.parametrize("status", [A.DECLINED, A.CANCELLED])
+def test_inactive_assignment_on_an_overlapping_mission_gives_201(
+    client, session, auth, world, status
+):
+    w = world
+    book(session, w, "Other", date(2027, 3, 10), date(2027, 3, 15), status)
+    assert invite(client, auth, w["lead"], w["mission"], 2, w["c"].username).status_code == 201
+
+
+def test_assignment_on_a_mission_that_ended_before_gives_201(client, session, auth, world):
+    w = world
+    book(session, w, "Before", date(2027, 2, 20), date(2027, 2, 28), A.ACCEPTED)
+    assert invite(client, auth, w["lead"], w["mission"], 2, w["c"].username).status_code == 201
+
+
+def test_double_booking_message_names_the_earliest_mission(client, session, auth, world):
+    w = world
+    book(session, w, "Late", date(2027, 3, 8), date(2027, 3, 12), A.ACCEPTED)
+    book(session, w, "Early", date(2027, 3, 2), date(2027, 3, 4), A.ACCEPTED)
+    reject(
+        client,
+        auth,
+        w,
+        f'{w["c"].username} is booked on mission "Early" from 2027-03-02 to 2027-03-04.',
+    )
+
+
+def test_one_day_mission_overlaps_leave_and_missions_on_that_day(client, session, auth, world):
+    w = world
+    day = date(2027, 4, 1)
+    w["mission"].start_date = w["mission"].end_date = day
+    session.flush()
+    leave(session, w, day, day)
+    reject(client, auth, w, f"{w['c'].username} is unavailable from {day} to {day}.")
+    session.execute(text("DELETE FROM unavailability WHERE user_id = :u"), {"u": w["c"].id})
+    book(session, w, "Same day", day, day, A.ACCEPTED)
+    reject(
+        client, auth, w, f'{w["c"].username} is booked on mission "Same day" from {day} to {day}.'
+    )
+
+
+def test_the_four_new_checks_run_in_order_after_already_on_mission(client, session, auth, world):
+    w = world
+    name = w["c"].username
+    active = assign(session, w["mission"], w["slot1"], w["c"])
+    declined = assign(session, w["mission"], w["slot2"], w["c"], A.DECLINED)
+    set_level(session, w, 2)
+    leave(session, w, date(2027, 3, 4), date(2027, 3, 5))
+    book(session, w, "Other", date(2027, 3, 10), date(2027, 3, 15), A.ACCEPTED)
+    reject(
+        client, auth, w, f"{name} already has an INVITED or ACCEPTED assignment on this mission."
+    )
+    active.status = A.CANCELLED
+    session.flush()
+    reject(client, auth, w, f"{name} declined this mission.")
+    session.delete(declined)
+    session.flush()
+    reject(client, auth, w, f"{name} does not have EVA at level 3 or higher.")
+    set_level(session, w, 3)
+    reject(client, auth, w, f"{name} is unavailable from 2027-03-04 to 2027-03-05.")
+    session.execute(text("DELETE FROM unavailability WHERE user_id = :u"), {"u": w["c"].id})
+    reject(client, auth, w, f'{name} is booked on mission "Other" from 2027-03-10 to 2027-03-15.')

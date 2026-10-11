@@ -9,9 +9,12 @@ def row_with(out, text):
 
 
 def test_staffing_journey(mc):
-    # Spec step 2. Later slices add steps 1, 3, 4 and 5 in the spec order.
+    # Spec steps 1 and 2. Later slices add steps 3, 4 and 5 in the spec order.
     assert mc("login", "--user", "leo")[0] == 0
     mid = mission_id(mc("missions", "list")[1], "Mars Analogue Habitat")
+    code, out = mc("missions", "invite", mid, "--slot", "2", "--crew", "jo")
+    assert code == 1
+    assert "jo does not have Communications at level 3 or higher." in out
     code, out = mc("missions", "invite", mid, "--slot", "2", "--crew", "ava")
     assert code == 0
     first = row_with(out, "Medicine")

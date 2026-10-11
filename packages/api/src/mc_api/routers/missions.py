@@ -19,6 +19,7 @@ from mc_api.models import (
     Unavailability,
 )
 from mc_api.scope import OrgScope
+from mc_api.staffing import ACTIVE, active_assignments, overlaps
 from mc_shared import (
     CrewSuggestion,
     InviteCreate,
@@ -51,9 +52,6 @@ router = APIRouter(
 )
 
 Scope = Annotated[OrgScope, Depends(get_scope)]
-
-
-ACTIVE = (AssignmentStatus.INVITED, AssignmentStatus.ACCEPTED)
 
 
 def mission_out(scope: OrgScope, mission: Mission) -> MissionOut:
@@ -374,6 +372,43 @@ def invite(
         raise reject(
             409, f"{crew.username} already has an INVITED or ACCEPTED assignment on this mission."
         )
+    booked = active_assignments(
+        scope, crew
+    )  # the username lookup took the crew lock, after the mission lock
+    if scope.session.scalar(
+        scope.select(Assignment).where(
+            Assignment.mission_id == mission.id,
+            Assignment.user_id == crew.id,
+            Assignment.status == AssignmentStatus.DECLINED,
+        )
+    ):
+        raise reject(409, f"{crew.username} declined this mission.")
+    level = scope.session.scalar(
+        scope.select(CrewSkill)
+        .where(CrewSkill.user_id == crew.id, CrewSkill.skill_id == slot.skill_id)
+        .with_only_columns(CrewSkill.level)
+    )
+    if level is None or level < slot.min_level:
+        skill_name = scope.get(Skill, slot.skill_id).name
+        raise reject(
+            409, f"{crew.username} does not have {skill_name} at level {slot.min_level} or higher."
+        )
+    leave = scope.session.scalar(
+        scope.select(Unavailability)
+        .where(Unavailability.user_id == crew.id, overlaps(Unavailability, mission))
+        .order_by(Unavailability.start_date)
+    )
+    if leave:
+        raise reject(
+            409, f"{crew.username} is unavailable from {leave.start_date} to {leave.end_date}."
+        )
+    for _, other, _, _ in booked:  # ordered by start date
+        if overlaps(other, mission):
+            raise reject(
+                409,
+                f'{crew.username} is booked on mission "{other.title}" '
+                f"from {other.start_date} to {other.end_date}.",
+            )
     scope.session.add(
         Assignment(
             org_id=scope.org_id,
@@ -419,13 +454,10 @@ def match_preview(
         skills.setdefault(u.id, {})[cs.skill_id] = cs.level
         holders[cs.skill_id] = holders.get(cs.skill_id, 0) + 1
 
-    def overlaps(m):
-        return (m.start_date <= mission.end_date) & (mission.start_date <= m.end_date)
-
     busy = set(
         scope.session.scalars(
             scope.select(Unavailability)
-            .where(overlaps(Unavailability))
+            .where(overlaps(Unavailability, mission))
             .with_only_columns(Unavailability.user_id)
         )
     )
@@ -441,20 +473,22 @@ def match_preview(
     )
     window = timedelta(days=WORKLOAD_WINDOW_DAYS)
     booked: dict[UUID, list[tuple[date, date]]] = {}
-    for uid, start, end in scope.session.execute(
+    for uid, start, end, clash in scope.session.execute(
         scope.select(Assignment)
         .join(
             Mission, (Mission.org_id == Assignment.org_id) & (Mission.id == Assignment.mission_id)
         )
         .where(
-            Assignment.status.in_([AssignmentStatus.INVITED, AssignmentStatus.ACCEPTED]),
+            Assignment.status.in_(ACTIVE),
             Mission.start_date <= mission.end_date + window,
             Mission.end_date >= mission.start_date - window,
         )
-        .with_only_columns(Assignment.user_id, Mission.start_date, Mission.end_date)
+        .with_only_columns(
+            Assignment.user_id, Mission.start_date, Mission.end_date, overlaps(Mission, mission)
+        )
     ):
         booked.setdefault(uid, []).append((start, end))
-        if start <= mission.end_date and mission.start_date <= end:
+        if clash:
             busy.add(uid)
     candidates = [
         Candidate(
